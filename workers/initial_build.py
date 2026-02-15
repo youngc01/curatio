@@ -273,6 +273,10 @@ async def main(movies_limit: int, shows_limit: int):
             job.status = 'completed'
             job.items_processed = movies_processed + shows_processed
             job.items_failed = movies_failed + shows_failed
+            job.job_metadata = {
+                'movies_target': movies_limit,
+                'shows_target': shows_limit
+            }
             db.commit()
             
             # Summary

@@ -5,8 +5,8 @@ Loads configuration from environment variables and .env file.
 """
 
 from typing import Optional
-from pydantic import Field, validator
-from pydantic_settings import BaseSettings
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -67,29 +67,33 @@ class Settings(BaseSettings):
     # Development
     skip_api_validation: bool = Field(False, description="Skip API key validation (testing only)")
     
-    @validator("base_url")
+    @field_validator("base_url")
+    @classmethod
     def validate_base_url(cls, v):
         """Ensure base_url doesn't have trailing slash."""
         return v.rstrip("/")
     
-    @validator("secret_key")
+    @field_validator("secret_key")
+    @classmethod
     def validate_secret_key(cls, v):
         """Ensure secret key is long enough."""
         if len(v) < 32:
             raise ValueError("SECRET_KEY must be at least 32 characters long")
         return v
     
-    @validator("catalog_size")
+    @field_validator("catalog_size")
+    @classmethod
     def validate_catalog_size(cls, v):
         """Ensure catalog size is reasonable."""
         if v < 10 or v > 500:
             raise ValueError("catalog_size must be between 10 and 500")
         return v
     
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False
+    )
 
 
 # Global settings instance

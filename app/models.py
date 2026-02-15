@@ -10,8 +10,7 @@ from sqlalchemy import (
     Column, String, Integer, Float, Boolean, DateTime, 
     JSON, ForeignKey, UniqueConstraint, Index, Text
 )
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
 
@@ -270,7 +269,7 @@ class TaggingJob(Base):
     total_tokens_used = Column(Integer, default=0, nullable=False)
     estimated_cost = Column(Float, default=0.0, nullable=False)
     
-    metadata = Column(JSON, nullable=True)
+    job_metadata = Column(JSON, nullable=True)  # Renamed from 'metadata' (reserved by SQLAlchemy)
     
     def __repr__(self):
         return f"<TaggingJob(id={self.id}, job_type='{self.job_type}', status='{self.status}')>"
