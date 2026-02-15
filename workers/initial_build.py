@@ -26,7 +26,6 @@ from app.tmdb_client import tmdb_client  # noqa: E402
 from app.gemini_client import gemini_engine  # noqa: E402
 from app.catalog_generator import CatalogGenerator  # noqa: E402
 
-
 # Predefined tags (these are created once)
 PREDEFINED_TAGS = {
     "genre": [

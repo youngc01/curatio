@@ -14,7 +14,6 @@ from loguru import logger
 from app.config import settings
 from app.models import Base
 
-
 # Create database engine
 engine = create_engine(
     settings.database_url,
