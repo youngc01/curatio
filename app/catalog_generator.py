@@ -1,0 +1,401 @@
+"""
+Catalog generator - builds Netflix-style categories from tag database.
+
+This module generates both universal and personalized catalogs using SQL queries.
+No Gemini calls needed - everything is pre-computed from tags!
+"""
+
+from typing import List, Dict, Optional
+from datetime import datetime, timedelta
+from sqlalchemy import func, and_, or_
+from sqlalchemy.orm import Session
+from loguru import logger
+
+from app.models import (
+    Tag, MovieTag, UniversalCategory, UniversalCatalogContent,
+    UserCatalog, UserCatalogContent, User, MediaMetadata
+)
+from app.config import settings
+
+
+class CatalogGenerator:
+    """Generates catalogs from tag database using SQL queries."""
+    
+    def __init__(self, db: Session):
+        self.db = db
+    
+    def generate_universal_catalog(
+        self,
+        category: UniversalCategory,
+        limit: int = None
+    ) -> List[int]:
+        """
+        Generate content for a universal catalog based on tag formula.
+        
+        Args:
+            category: UniversalCategory with tag_formula
+            limit: Max items (defaults to settings.catalog_size)
+        
+        Returns:
+            List of TMDB IDs ranked by relevance
+        """
+        limit = limit or settings.catalog_size
+        tag_formula = category.tag_formula
+        
+        required_tags = tag_formula.get("required", [])
+        optional_tags = tag_formula.get("optional", [])
+        min_required = tag_formula.get("min_required", len(required_tags))
+        
+        # Get tag IDs
+        all_tag_names = required_tags + optional_tags
+        tag_map = {
+            tag.name: tag.id
+            for tag in self.db.query(Tag).filter(Tag.name.in_(all_tag_names)).all()
+        }
+        
+        required_tag_ids = [tag_map[name] for name in required_tags if name in tag_map]
+        optional_tag_ids = [tag_map[name] for name in optional_tags if name in tag_map]
+        
+        # Query movies with matching tags
+        query = self.db.query(
+            MovieTag.tmdb_id,
+            func.avg(MovieTag.confidence).label('match_score'),
+            func.count(func.distinct(MovieTag.tag_id)).label('tag_count')
+        ).filter(
+            MovieTag.media_type == category.media_type,
+            MovieTag.tag_id.in_(required_tag_ids + optional_tag_ids)
+        ).group_by(
+            MovieTag.tmdb_id
+        )
+        
+        # Must have at least min_required of the required tags
+        if required_tag_ids:
+            subquery = self.db.query(
+                MovieTag.tmdb_id
+            ).filter(
+                MovieTag.tag_id.in_(required_tag_ids)
+            ).group_by(
+                MovieTag.tmdb_id
+            ).having(
+                func.count(func.distinct(MovieTag.tag_id)) >= min_required
+            ).subquery()
+            
+            query = query.filter(MovieTag.tmdb_id.in_(subquery))
+        
+        # Order by match score and limit
+        results = query.order_by(
+            func.avg(MovieTag.confidence).desc()
+        ).limit(limit).all()
+        
+        logger.info(
+            f"Generated {len(results)} items for catalog '{category.name}' "
+            f"(required: {required_tags}, optional: {optional_tags})"
+        )
+        
+        return [r.tmdb_id for r in results]
+    
+    def save_universal_catalog_content(
+        self,
+        category_id: str,
+        tmdb_ids: List[int],
+        match_scores: Optional[List[float]] = None
+    ):
+        """
+        Save universal catalog content to database.
+        
+        Args:
+            category_id: Category ID
+            tmdb_ids: List of TMDB IDs in rank order
+            match_scores: Optional match scores for each item
+        """
+        # Delete existing content
+        self.db.query(UniversalCatalogContent).filter(
+            UniversalCatalogContent.category_id == category_id
+        ).delete()
+        
+        # Get category for media_type
+        category = self.db.query(UniversalCategory).filter(
+            UniversalCategory.id == category_id
+        ).first()
+        
+        if not category:
+            logger.error(f"Category {category_id} not found")
+            return
+        
+        # Insert new content
+        for rank, tmdb_id in enumerate(tmdb_ids, start=1):
+            match_score = match_scores[rank - 1] if match_scores else 0.0
+            
+            content = UniversalCatalogContent(
+                category_id=category_id,
+                tmdb_id=tmdb_id,
+                rank=rank,
+                match_score=match_score,
+                media_type=category.media_type,
+                last_updated=datetime.utcnow()
+            )
+            self.db.add(content)
+        
+        self.db.commit()
+        logger.info(f"Saved {len(tmdb_ids)} items to catalog '{category_id}'")
+    
+    def regenerate_all_universal_catalogs(self):
+        """Regenerate all universal catalogs from scratch."""
+        categories = self.db.query(UniversalCategory).filter(
+            UniversalCategory.is_active == True
+        ).all()
+        
+        logger.info(f"Regenerating {len(categories)} universal catalogs...")
+        
+        for category in categories:
+            try:
+                tmdb_ids = self.generate_universal_catalog(category)
+                self.save_universal_catalog_content(category.id, tmdb_ids)
+            except Exception as e:
+                logger.error(f"Failed to generate catalog '{category.id}': {e}")
+        
+        logger.info("Universal catalog regeneration complete")
+    
+    def generate_personalized_catalog(
+        self,
+        user_id: int,
+        catalog_method: str,
+        params: Dict = None,
+        limit: int = None
+    ) -> List[int]:
+        """
+        Generate personalized catalog for a user.
+        
+        Args:
+            user_id: User ID
+            catalog_method: Method (e.g., 'top_picks', 'because_you_watched')
+            params: Parameters for generation (e.g., {'reference_movie_id': 123})
+            limit: Max items
+        
+        Returns:
+            List of TMDB IDs
+        """
+        limit = limit or settings.catalog_size
+        params = params or {}
+        
+        if catalog_method == "top_picks":
+            return self._generate_top_picks(user_id, limit)
+        elif catalog_method == "because_you_watched":
+            return self._generate_because_you_watched(user_id, params, limit)
+        elif catalog_method == "hidden_gems":
+            return self._generate_hidden_gems(user_id, limit)
+        else:
+            logger.warning(f"Unknown catalog method: {catalog_method}")
+            return []
+    
+    def _generate_top_picks(self, user_id: int, limit: int) -> List[int]:
+        """
+        Generate 'Top Picks for You' based on user's viewing history.
+        
+        This finds items with tags similar to what the user has watched.
+        """
+        # Get user's watched items
+        # For now, simplified: return popular items with high ratings
+        results = self.db.query(
+            MediaMetadata.tmdb_id
+        ).filter(
+            MediaMetadata.vote_average >= 7.0,
+            MediaMetadata.vote_count >= 1000
+        ).order_by(
+            MediaMetadata.popularity.desc()
+        ).limit(limit).all()
+        
+        return [r.tmdb_id for r in results]
+    
+    def _generate_because_you_watched(
+        self,
+        user_id: int,
+        params: Dict,
+        limit: int
+    ) -> List[int]:
+        """
+        Generate 'Because You Watched X' catalog.
+        
+        Finds items with similar tags to the reference item.
+        """
+        reference_id = params.get('reference_movie_id')
+        if not reference_id:
+            logger.error("No reference_movie_id provided")
+            return []
+        
+        # Get tags for reference item
+        reference_tags = self.db.query(MovieTag.tag_id, MovieTag.confidence).filter(
+            MovieTag.tmdb_id == reference_id
+        ).all()
+        
+        if not reference_tags:
+            logger.warning(f"No tags found for reference item {reference_id}")
+            return []
+        
+        tag_ids = [t.tag_id for t in reference_tags]
+        
+        # Find items with similar tags
+        results = self.db.query(
+            MovieTag.tmdb_id,
+            func.count(MovieTag.tag_id).label('matching_tags'),
+            func.avg(MovieTag.confidence).label('avg_confidence')
+        ).filter(
+            MovieTag.tag_id.in_(tag_ids),
+            MovieTag.tmdb_id != reference_id  # Exclude the reference item itself
+        ).group_by(
+            MovieTag.tmdb_id
+        ).order_by(
+            func.count(MovieTag.tag_id).desc(),
+            func.avg(MovieTag.confidence).desc()
+        ).limit(limit).all()
+        
+        return [r.tmdb_id for r in results]
+    
+    def _generate_hidden_gems(self, user_id: int, limit: int) -> List[int]:
+        """
+        Generate 'Hidden Gems' - high-quality but less popular items.
+        """
+        results = self.db.query(
+            MediaMetadata.tmdb_id
+        ).filter(
+            MediaMetadata.vote_average >= 7.5,
+            MediaMetadata.vote_count >= 500,
+            MediaMetadata.popularity < 50  # Less popular
+        ).order_by(
+            MediaMetadata.vote_average.desc()
+        ).limit(limit).all()
+        
+        return [r.tmdb_id for r in results]
+    
+    def save_user_catalog(
+        self,
+        user_id: int,
+        slot_id: str,
+        name: str,
+        media_type: str,
+        tmdb_ids: List[int],
+        generation_method: str,
+        generation_params: Dict = None
+    ) -> UserCatalog:
+        """
+        Save personalized catalog for a user.
+        
+        Args:
+            user_id: User ID
+            slot_id: Slot identifier (e.g., 'personalized-1')
+            name: Display name
+            media_type: 'movie' or 'tv'
+            tmdb_ids: List of TMDB IDs
+            generation_method: How it was generated
+            generation_params: Parameters used
+        
+        Returns:
+            Created UserCatalog
+        """
+        # Check if catalog exists
+        catalog = self.db.query(UserCatalog).filter(
+            UserCatalog.user_id == user_id,
+            UserCatalog.slot_id == slot_id
+        ).first()
+        
+        if catalog:
+            # Update existing
+            catalog.name = name
+            catalog.generation_method = generation_method
+            catalog.generation_params = generation_params
+            catalog.last_generated = datetime.utcnow()
+            
+            # Delete old content
+            self.db.query(UserCatalogContent).filter(
+                UserCatalogContent.catalog_id == catalog.id
+            ).delete()
+        else:
+            # Create new
+            catalog = UserCatalog(
+                user_id=user_id,
+                slot_id=slot_id,
+                name=name,
+                media_type=media_type,
+                generation_method=generation_method,
+                generation_params=generation_params,
+                last_generated=datetime.utcnow()
+            )
+            self.db.add(catalog)
+            self.db.flush()  # Get catalog.id
+        
+        # Add content
+        for rank, tmdb_id in enumerate(tmdb_ids, start=1):
+            content = UserCatalogContent(
+                catalog_id=catalog.id,
+                tmdb_id=tmdb_id,
+                rank=rank,
+                match_score=0.0,  # Can be calculated if needed
+                media_type=media_type
+            )
+            self.db.add(content)
+        
+        self.db.commit()
+        logger.info(f"Saved user catalog '{name}' with {len(tmdb_ids)} items")
+        
+        return catalog
+    
+    def get_catalog_content(
+        self,
+        category_id: str,
+        user_id: Optional[int] = None
+    ) -> List[Dict]:
+        """
+        Get catalog content with metadata.
+        
+        Args:
+            category_id: Category ID
+            user_id: User ID (for personalized catalogs)
+        
+        Returns:
+            List of catalog items with metadata
+        """
+        if user_id:
+            # Personalized catalog
+            results = self.db.query(
+                UserCatalogContent, MediaMetadata
+            ).join(
+                MediaMetadata,
+                and_(
+                    UserCatalogContent.tmdb_id == MediaMetadata.tmdb_id,
+                    UserCatalogContent.media_type == MediaMetadata.media_type
+                )
+            ).join(
+                UserCatalog
+            ).filter(
+                UserCatalog.user_id == user_id,
+                UserCatalog.slot_id == category_id
+            ).order_by(
+                UserCatalogContent.rank
+            ).all()
+        else:
+            # Universal catalog
+            results = self.db.query(
+                UniversalCatalogContent, MediaMetadata
+            ).join(
+                MediaMetadata,
+                and_(
+                    UniversalCatalogContent.tmdb_id == MediaMetadata.tmdb_id,
+                    UniversalCatalogContent.media_type == MediaMetadata.media_type
+                )
+            ).filter(
+                UniversalCatalogContent.category_id == category_id
+            ).order_by(
+                UniversalCatalogContent.rank
+            ).all()
+        
+        items = []
+        for content, metadata in results:
+            items.append({
+                "tmdb_id": metadata.tmdb_id,
+                "media_type": metadata.media_type,
+                "title": metadata.title,
+                "poster": metadata.poster_path,
+                "rank": content.rank
+            })
+        
+        return items
