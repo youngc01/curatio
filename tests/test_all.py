@@ -613,6 +613,53 @@ def test_filter_new_items_all_existing(db):
 
 
 # =============================================================================
+# Category Completeness Tests
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_universal_categories_count(db):
+    """Test that all 40 universal categories are created."""
+    from workers.initial_build import create_universal_categories
+    from app.models import UniversalCategory
+
+    await create_universal_categories(db)
+
+    count = db.query(UniversalCategory).count()
+    assert count == 40, f"Expected 40 categories, got {count}"
+
+
+@pytest.mark.asyncio
+async def test_universal_categories_no_duplicates(db):
+    """Test that no duplicate category IDs exist."""
+    from workers.initial_build import create_universal_categories
+    from app.models import UniversalCategory
+
+    await create_universal_categories(db)
+
+    categories = db.query(UniversalCategory).all()
+    ids = [c.id for c in categories]
+    assert len(ids) == len(set(ids)), "Duplicate category IDs found"
+
+
+@pytest.mark.asyncio
+async def test_universal_categories_have_valid_formulas(db):
+    """Test that all categories have valid tag formulas."""
+    from workers.initial_build import create_universal_categories
+    from app.models import UniversalCategory
+
+    await create_universal_categories(db)
+
+    categories = db.query(UniversalCategory).all()
+    for cat in categories:
+        formula = cat.tag_formula
+        assert "required" in formula, f"{cat.id} missing 'required' in formula"
+        assert "min_required" in formula, f"{cat.id} missing 'min_required' in formula"
+        assert len(formula["required"]) >= 2, f"{cat.id} needs at least 2 required tags"
+        assert formula["min_required"] >= 2, f"{cat.id} min_required should be >= 2"
+
+
+# =============================================================================
 # Run Tests
 # =============================================================================
 

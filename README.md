@@ -174,31 +174,33 @@ stremio-ai-addon/
 
 ### Universal Categories (40 total)
 
-**Genre + Mood**
+**Genre + Mood** (15 categories)
 - Dark & Gritty Crime Dramas
 - Feel-Good Comedies
 - Mind-Bending Sci-Fi Thrillers
-- Slow-Burn Psychological Thrillers
+- High-Octane Action
+- Lighthearted Romance
 
-**Era + Genre**
-- Classic Film Noir (1940s-50s)
-- 80s Action Blockbusters
-- 90s Teen Comedies
+**Era + Genre** (5 categories)
+- Totally '80s Action
+- '90s Comedies
+- Golden Age Film Noir
 
-**Region + Genre**
-- Korean Crime Dramas
-- British Cozy Mysteries
-- Scandinavian Noir
+**Plot Elements** (6 categories)
+- Heist & Caper Films
+- Time Travel Mind-Benders
+- Coming-of-Age Stories
 
-**Plot Elements**
-- Heist Films with a Twist
-- Time Travel Stories
-- Revenge Thrillers
+**Style + Character** (9 categories)
+- Neo-Noir Cinema
+- Cyberpunk Futures
+- Anti-Hero Sagas
+- Powerful Women on Screen
 
-**Special Collections**
-- Critically Acclaimed Award Winners
-- Hidden Gems
-- Cult Classics
+**Special Collections** (5 categories)
+- Conspiracy & Paranoia
+- Lavish Period Dramas
+- Whodunit Detective Mysteries
 
 ### Personalized Categories (10 per user)
 
