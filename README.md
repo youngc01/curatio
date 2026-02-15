@@ -1,2 +1,2 @@
-# Stremio-Recommendations
+# stremio-ai-addon
  
