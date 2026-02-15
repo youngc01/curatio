@@ -506,6 +506,113 @@ def test_master_password_protection(client):
 
 
 # =============================================================================
+# Scheduler Tests
+# =============================================================================
+
+
+def test_parse_time_valid():
+    """Test parsing valid HH:MM time strings."""
+    from app.scheduler import parse_time
+
+    assert parse_time("03:00") == (3, 0)
+    assert parse_time("00:00") == (0, 0)
+    assert parse_time("23:59") == (23, 59)
+    assert parse_time("12:30") == (12, 30)
+
+
+def test_parse_time_invalid():
+    """Test parsing invalid time strings raises ValueError."""
+    from app.scheduler import parse_time
+
+    with pytest.raises(ValueError):
+        parse_time("25:00")
+    with pytest.raises(ValueError):
+        parse_time("12:60")
+    with pytest.raises(ValueError):
+        parse_time("invalid")
+    with pytest.raises(ValueError):
+        parse_time("12")
+
+
+def test_seconds_until():
+    """Test seconds_until returns a positive value."""
+    from app.scheduler import seconds_until
+
+    result = seconds_until(3, 0)
+    assert result > 0
+    # Should be at most ~24 hours
+    assert result <= 86400
+
+
+# =============================================================================
+# Daily Update Tests
+# =============================================================================
+
+
+def test_filter_new_items(db):
+    """Test that filter_new_items removes already-existing items."""
+    from workers.daily_update import filter_new_items
+
+    # Add an existing item to the database
+    existing = MediaMetadata(
+        tmdb_id=100,
+        media_type="movie",
+        title="Existing Movie",
+        popularity=50.0,
+    )
+    db.add(existing)
+    db.commit()
+
+    # Items from TMDB (one existing, one new)
+    items = [
+        {"id": 100, "title": "Existing Movie"},
+        {"id": 200, "title": "New Movie"},
+    ]
+
+    result = filter_new_items(db, items, "movie")
+
+    assert len(result) == 1
+    assert result[0]["id"] == 200
+
+
+def test_filter_new_items_all_new(db):
+    """Test filter_new_items when all items are new."""
+    from workers.daily_update import filter_new_items
+
+    items = [
+        {"id": 300, "title": "New Movie 1"},
+        {"id": 400, "title": "New Movie 2"},
+    ]
+
+    result = filter_new_items(db, items, "movie")
+    assert len(result) == 2
+
+
+def test_filter_new_items_all_existing(db):
+    """Test filter_new_items when all items already exist."""
+    from workers.daily_update import filter_new_items
+
+    for tmdb_id in [500, 600]:
+        db.add(
+            MediaMetadata(
+                tmdb_id=tmdb_id,
+                media_type="movie",
+                title=f"Movie {tmdb_id}",
+                popularity=50.0,
+            )
+        )
+    db.commit()
+
+    items = [
+        {"id": 500, "title": "Movie 500"},
+        {"id": 600, "title": "Movie 600"},
+    ]
+
+    result = filter_new_items(db, items, "movie")
+    assert len(result) == 0
+
+
+# =============================================================================
 # Run Tests
 # =============================================================================
 
