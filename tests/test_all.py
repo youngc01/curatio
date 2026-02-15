@@ -4,23 +4,43 @@ Comprehensive test suite for Stremio AI Addon.
 Tests all major components: tagging, catalogs, API endpoints.
 """
 
+import json
+import os
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
 import pytest
-import asyncio
-from datetime import datetime
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
 
 # Add parent directory to path
-import sys
-from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.main import app
-from app.models import Base, Tag, MovieTag, UniversalCategory, MediaMetadata
-from app.gemini_client import GeminiTaggingEngine
-from app.catalog_generator import CatalogGenerator
-from app.config import settings
+# Set test environment variables before importing app modules
+os.environ.setdefault("DATABASE_URL", "sqlite:///./test.db")
+os.environ.setdefault("TMDB_API_KEY", "test_key")
+os.environ.setdefault("GEMINI_API_KEY", "test_key")
+os.environ.setdefault("TRAKT_CLIENT_ID", "test_id")
+os.environ.setdefault("TRAKT_CLIENT_SECRET", "test_secret")
+os.environ.setdefault("TRAKT_REDIRECT_URI", "http://localhost/callback")
+os.environ.setdefault("MASTER_PASSWORD", "test_password")
+os.environ.setdefault("SECRET_KEY", "test_secret_key_at_least_32_chars_long")
+os.environ.setdefault("BASE_URL", "http://localhost:8000")
+os.environ.setdefault("SKIP_API_VALIDATION", "true")
+
+from app.main import app  # noqa: E402
+from app.database import get_db_dependency  # noqa: E402
+from app.models import (  # noqa: E402
+    Base,
+    Tag,
+    MovieTag,
+    UniversalCategory,
+    MediaMetadata,
+)
+from app.gemini_client import GeminiTaggingEngine  # noqa: E402
+from app.catalog_generator import CatalogGenerator  # noqa: E402
 
 # Test database
 TEST_DATABASE_URL = "sqlite:///./test.db"
@@ -32,87 +52,126 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 def db():
     """Create test database for each test."""
     Base.metadata.create_all(bind=engine)
-    db = TestingSessionLocal()
+    session = TestingSessionLocal()
     try:
-        yield db
+        yield session
     finally:
-        db.close()
+        session.close()
         Base.metadata.drop_all(bind=engine)
 
 
 @pytest.fixture
-def client():
-    """FastAPI test client."""
-    return TestClient(app)
+def client(db):
+    """FastAPI test client with test database."""
+
+    def override_get_db():
+        try:
+            yield db
+        finally:
+            pass
+
+    app.dependency_overrides[get_db_dependency] = override_get_db
+    yield TestClient(app)
+    app.dependency_overrides.clear()
 
 
 # =============================================================================
 # Tagging Tests
 # =============================================================================
 
+
 @pytest.mark.asyncio
 async def test_gemini_tagging_single_movie():
     """Test tagging a single movie with Gemini."""
-    engine = GeminiTaggingEngine()
-    
-    test_movie = {
-        'tmdb_id': 78,
-        'media_type': 'movie',
-        'title': 'Blade Runner',
-        'overview': 'A blade runner must pursue and terminate four replicants...',
-        'genres': ['Science Fiction', 'Thriller'],
-        'release_date': '1982-06-25'
-    }
-    
-    # Mock Gemini response for testing
-    # In real test, this would call actual API or use mock
-    result = await engine.tag_items([test_movie])
-    
+    mock_response = MagicMock()
+    mock_response.text = json.dumps(
+        {
+            "items": [
+                {
+                    "tmdb_id": 78,
+                    "tags": {"Sci-Fi": 0.95, "Neo-Noir": 0.9, "Cyberpunk": 0.85},
+                }
+            ]
+        }
+    )
+
+    with patch("app.gemini_client.genai") as mock_genai:
+        mock_model = MagicMock()
+        mock_model.generate_content.return_value = mock_response
+        mock_genai.GenerativeModel.return_value = mock_model
+
+        tagging_engine = GeminiTaggingEngine()
+
+        test_movie = {
+            "tmdb_id": 78,
+            "media_type": "movie",
+            "title": "Blade Runner",
+            "overview": "A blade runner must pursue and terminate four replicants...",
+            "genres": ["Science Fiction", "Thriller"],
+            "release_date": "1982-06-25",
+        }
+
+        result = await tagging_engine.tag_items([test_movie])
+
     assert len(result) > 0
-    assert result[0]['tmdb_id'] == 78
-    assert 'tags' in result[0]
-    assert isinstance(result[0]['tags'], dict)
-    
-    # Check for expected tags
-    tags = result[0]['tags']
-    assert any(tag in tags for tag in ['Sci-Fi', 'Neo-Noir', 'Cyberpunk'])
+    assert result[0]["tmdb_id"] == 78
+    assert "tags" in result[0]
+    assert isinstance(result[0]["tags"], dict)
+
+    tags = result[0]["tags"]
+    assert any(tag in tags for tag in ["Sci-Fi", "Neo-Noir", "Cyberpunk"])
 
 
 @pytest.mark.asyncio
 async def test_gemini_tagging_batch():
     """Test tagging multiple movies in batch."""
-    engine = GeminiTaggingEngine()
-    
-    test_movies = [
+    mock_response = MagicMock()
+    mock_response.text = json.dumps(
         {
-            'tmdb_id': 78,
-            'media_type': 'movie',
-            'title': 'Blade Runner',
-            'overview': 'Sci-fi noir about replicants...',
-            'genres': ['Science Fiction'],
-            'release_date': '1982-06-25'
-        },
-        {
-            'tmdb_id': 603,
-            'media_type': 'movie',
-            'title': 'The Matrix',
-            'overview': 'Reality is not what it seems...',
-            'genres': ['Action', 'Science Fiction'],
-            'release_date': '1999-03-31'
+            "items": [
+                {"tmdb_id": 78, "tags": {"Sci-Fi": 0.95}},
+                {"tmdb_id": 603, "tags": {"Action": 0.9, "Sci-Fi": 0.85}},
+            ]
         }
-    ]
-    
-    results = await engine.tag_items(test_movies)
-    
+    )
+
+    with patch("app.gemini_client.genai") as mock_genai:
+        mock_model = MagicMock()
+        mock_model.generate_content.return_value = mock_response
+        mock_genai.GenerativeModel.return_value = mock_model
+
+        tagging_engine = GeminiTaggingEngine()
+
+        test_movies = [
+            {
+                "tmdb_id": 78,
+                "media_type": "movie",
+                "title": "Blade Runner",
+                "overview": "Sci-fi noir about replicants...",
+                "genres": ["Science Fiction"],
+                "release_date": "1982-06-25",
+            },
+            {
+                "tmdb_id": 603,
+                "media_type": "movie",
+                "title": "The Matrix",
+                "overview": "Reality is not what it seems...",
+                "genres": ["Action", "Science Fiction"],
+                "release_date": "1999-03-31",
+            },
+        ]
+
+        results = await tagging_engine.tag_items(test_movies)
+
     assert len(results) == 2
-    assert all('tags' in r for r in results)
+    assert all("tags" in r for r in results)
 
 
 def test_tag_confidence_validation():
     """Test that tag confidence scores are valid (0.0 to 1.0)."""
     # This would test that all confidence scores from Gemini are in valid range
     confidence = 0.85
-    
+
     assert 0.0 <= confidence <= 1.0
 
 
@@ -120,12 +179,13 @@ def test_tag_confidence_validation():
 # Database Tests
 # =============================================================================
 
+
 def test_create_tags(db):
     """Test creating tags in database."""
     tag = Tag(name="Dark", category="mood")
     db.add(tag)
     db.commit()
-    
+
     retrieved = db.query(Tag).filter(Tag.name == "Dark").first()
     assert retrieved is not None
     assert retrieved.name == "Dark"
@@ -138,17 +198,12 @@ def test_create_movie_tag(db):
     tag = Tag(name="Cyberpunk", category="style")
     db.add(tag)
     db.commit()
-    
+
     # Create movie tag
-    movie_tag = MovieTag(
-        tmdb_id=78,
-        tag_id=tag.id,
-        confidence=0.95,
-        media_type="movie"
-    )
+    movie_tag = MovieTag(tmdb_id=78, tag_id=tag.id, confidence=0.95, media_type="movie")
     db.add(movie_tag)
     db.commit()
-    
+
     # Retrieve
     retrieved = db.query(MovieTag).filter(MovieTag.tmdb_id == 78).first()
     assert retrieved is not None
@@ -164,15 +219,17 @@ def test_create_universal_category(db):
         tier=1,
         sort_order=1,
         media_type="movie",
-        tag_formula={"required": ["Dark", "Crime"], "min_required": 2}
+        tag_formula={"required": ["Dark", "Crime"], "min_required": 2},
     )
     db.add(category)
     db.commit()
-    
-    retrieved = db.query(UniversalCategory).filter(
-        UniversalCategory.id == "test-category"
-    ).first()
-    
+
+    retrieved = (
+        db.query(UniversalCategory)
+        .filter(UniversalCategory.id == "test-category")
+        .first()
+    )
+
     assert retrieved is not None
     assert retrieved.name == "Test Category"
     assert "required" in retrieved.tag_formula
@@ -181,6 +238,7 @@ def test_create_universal_category(db):
 # =============================================================================
 # Catalog Generator Tests
 # =============================================================================
+
 
 def test_catalog_generator_setup(db):
     """Test catalog generator initialization."""
@@ -195,7 +253,7 @@ def test_generate_universal_catalog(db):
     crime_tag = Tag(name="Crime", category="genre")
     db.add_all([dark_tag, crime_tag])
     db.commit()
-    
+
     # Create test movies
     movies = [
         MediaMetadata(
@@ -203,19 +261,19 @@ def test_generate_universal_catalog(db):
             media_type="movie",
             title="Dark Crime Movie 1",
             popularity=100.0,
-            vote_average=8.0
+            vote_average=8.0,
         ),
         MediaMetadata(
             tmdb_id=2,
             media_type="movie",
             title="Dark Crime Movie 2",
             popularity=90.0,
-            vote_average=7.5
-        )
+            vote_average=7.5,
+        ),
     ]
     db.add_all(movies)
     db.commit()
-    
+
     # Create movie tags
     movie_tags = [
         MovieTag(tmdb_id=1, tag_id=dark_tag.id, confidence=0.9, media_type="movie"),
@@ -225,7 +283,7 @@ def test_generate_universal_catalog(db):
     ]
     db.add_all(movie_tags)
     db.commit()
-    
+
     # Create category
     category = UniversalCategory(
         id="dark-crime",
@@ -233,15 +291,15 @@ def test_generate_universal_catalog(db):
         tier=1,
         sort_order=1,
         media_type="movie",
-        tag_formula={"required": ["Dark", "Crime"], "min_required": 2}
+        tag_formula={"required": ["Dark", "Crime"], "min_required": 2},
     )
     db.add(category)
     db.commit()
-    
+
     # Generate catalog
     generator = CatalogGenerator(db)
     tmdb_ids = generator.generate_universal_catalog(category, limit=10)
-    
+
     assert len(tmdb_ids) == 2
     assert 1 in tmdb_ids
     assert 2 in tmdb_ids
@@ -250,6 +308,7 @@ def test_generate_universal_catalog(db):
 # =============================================================================
 # API Tests
 # =============================================================================
+
 
 def test_root_endpoint(client):
     """Test root endpoint."""
@@ -269,7 +328,7 @@ def test_universal_manifest(client):
     """Test universal manifest endpoint."""
     response = client.get("/manifest/universal.json")
     assert response.status_code == 200
-    
+
     manifest = response.json()
     assert "id" in manifest
     assert "catalogs" in manifest
@@ -288,6 +347,7 @@ def test_catalog_endpoint_not_found(client):
 # Integration Tests
 # =============================================================================
 
+
 @pytest.mark.integration
 def test_full_tagging_to_catalog_flow(db):
     """Integration test: Tag movies → Store in DB → Generate catalog."""
@@ -295,11 +355,11 @@ def test_full_tagging_to_catalog_flow(db):
     tags = [
         Tag(name="Dark", category="mood"),
         Tag(name="Gritty", category="mood"),
-        Tag(name="Crime", category="genre")
+        Tag(name="Crime", category="genre"),
     ]
     db.add_all(tags)
     db.commit()
-    
+
     # Step 2: Create movie metadata
     movie = MediaMetadata(
         tmdb_id=999,
@@ -307,20 +367,20 @@ def test_full_tagging_to_catalog_flow(db):
         title="Test Dark Crime Movie",
         overview="A dark and gritty crime story",
         popularity=100.0,
-        vote_average=8.5
+        vote_average=8.5,
     )
     db.add(movie)
     db.commit()
-    
+
     # Step 3: Add tags to movie
     movie_tags = [
         MovieTag(tmdb_id=999, tag_id=tags[0].id, confidence=0.95, media_type="movie"),
         MovieTag(tmdb_id=999, tag_id=tags[1].id, confidence=0.90, media_type="movie"),
-        MovieTag(tmdb_id=999, tag_id=tags[2].id, confidence=0.88, media_type="movie")
+        MovieTag(tmdb_id=999, tag_id=tags[2].id, confidence=0.88, media_type="movie"),
     ]
     db.add_all(movie_tags)
     db.commit()
-    
+
     # Step 4: Create category
     category = UniversalCategory(
         id="integration-test",
@@ -328,15 +388,15 @@ def test_full_tagging_to_catalog_flow(db):
         tier=1,
         sort_order=1,
         media_type="movie",
-        tag_formula={"required": ["Dark", "Crime"], "min_required": 2}
+        tag_formula={"required": ["Dark", "Crime"], "min_required": 2},
     )
     db.add(category)
     db.commit()
-    
+
     # Step 5: Generate catalog
     generator = CatalogGenerator(db)
     tmdb_ids = generator.generate_universal_catalog(category)
-    
+
     # Step 6: Verify
     assert 999 in tmdb_ids
 
@@ -345,38 +405,33 @@ def test_full_tagging_to_catalog_flow(db):
 # Performance Tests
 # =============================================================================
 
+
 @pytest.mark.performance
 def test_catalog_query_performance(db):
     """Test that catalog queries are fast (< 100ms)."""
     import time
-    
+
     # Create test data
     tags = [Tag(name=f"Tag{i}", category="test") for i in range(10)]
     db.add_all(tags)
     db.commit()
-    
+
     # Create 1000 test movies
     for i in range(1000):
         movie = MediaMetadata(
-            tmdb_id=i,
-            media_type="movie",
-            title=f"Movie {i}",
-            popularity=float(i)
+            tmdb_id=i, media_type="movie", title=f"Movie {i}", popularity=float(i)
         )
         db.add(movie)
-        
+
         # Add random tags
         for j in range(5):
             movie_tag = MovieTag(
-                tmdb_id=i,
-                tag_id=tags[j % 10].id,
-                confidence=0.8,
-                media_type="movie"
+                tmdb_id=i, tag_id=tags[j % 10].id, confidence=0.8, media_type="movie"
             )
             db.add(movie_tag)
-    
+
     db.commit()
-    
+
     # Create category
     category = UniversalCategory(
         id="perf-test",
@@ -384,18 +439,18 @@ def test_catalog_query_performance(db):
         tier=1,
         sort_order=1,
         media_type="movie",
-        tag_formula={"required": ["Tag0", "Tag1"], "min_required": 2}
+        tag_formula={"required": ["Tag0", "Tag1"], "min_required": 2},
     )
     db.add(category)
     db.commit()
-    
+
     # Measure query time
     generator = CatalogGenerator(db)
-    
+
     start = time.time()
     results = generator.generate_universal_catalog(category, limit=100)
     duration = time.time() - start
-    
+
     assert duration < 0.1  # Should be under 100ms
     assert len(results) > 0
 
@@ -403,6 +458,7 @@ def test_catalog_query_performance(db):
 # =============================================================================
 # Error Handling Tests
 # =============================================================================
+
 
 def test_invalid_tag_formula(db):
     """Test handling of invalid tag formula."""
@@ -412,13 +468,13 @@ def test_invalid_tag_formula(db):
         tier=1,
         sort_order=1,
         media_type="movie",
-        tag_formula={"required": ["NonexistentTag"], "min_required": 1}
+        tag_formula={"required": ["NonexistentTag"], "min_required": 1},
     )
     db.add(category)
     db.commit()
-    
+
     generator = CatalogGenerator(db)
-    
+
     # Should not crash, just return empty results
     results = generator.generate_universal_catalog(category)
     assert isinstance(results, list)
@@ -427,16 +483,21 @@ def test_invalid_tag_formula(db):
 @pytest.mark.asyncio
 async def test_gemini_api_error_handling():
     """Test handling of Gemini API errors."""
-    engine = GeminiTaggingEngine()
-    
-    # Test with empty input
-    results = await engine.tag_items([])
-    assert results == []
+    with patch("app.gemini_client.genai") as mock_genai:
+        mock_model = MagicMock()
+        mock_genai.GenerativeModel.return_value = mock_model
+
+        tagging_engine = GeminiTaggingEngine()
+
+        # Test with empty input
+        results = await tagging_engine.tag_items([])
+        assert results == []
 
 
 # =============================================================================
 # Security Tests
 # =============================================================================
+
 
 def test_master_password_protection(client):
     """Test that master password is required for authentication."""

@@ -18,71 +18,79 @@ MediaType = Literal["movie", "tv"]
 
 class TMDBClient:
     """Client for TMDB API."""
-    
+
     BASE_URL = "https://api.themoviedb.org/3"
-    
-    def __init__(self, api_key: str = None):
+
+    def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or settings.tmdb_api_key
         self.client = httpx.AsyncClient(timeout=30.0)
-    
+
     async def close(self):
         """Close HTTP client."""
         await self.client.aclose()
-    
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    async def _request(self, endpoint: str, params: Dict = None) -> Dict:
+
+    @retry(
+        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10)
+    )
+    async def _request(self, endpoint: str, params: Optional[Dict] = None) -> Dict:
         """
         Make request to TMDB API with retry logic.
-        
+
         Args:
             endpoint: API endpoint (e.g., '/movie/550')
             params: Query parameters
-        
+
         Returns:
             JSON response as dictionary
         """
         if params is None:
             params = {}
-        
+
         params["api_key"] = self.api_key
-        
+
         url = f"{self.BASE_URL}{endpoint}"
-        
+
         try:
             response = await self.client.get(url, params=params)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as e:
-            logger.error(f"TMDB API error: {e.response.status_code} - {e.response.text}")
+            logger.error(
+                f"TMDB API error: {e.response.status_code} - {e.response.text}"
+            )
             raise
         except Exception as e:
             logger.error(f"TMDB request failed: {e}")
             raise
-    
+
     async def get_movie(self, tmdb_id: int) -> Dict:
         """Get detailed movie information."""
-        return await self._request(f"/movie/{tmdb_id}", params={"append_to_response": "credits,keywords"})
-    
+        return await self._request(
+            f"/movie/{tmdb_id}", params={"append_to_response": "credits,keywords"}
+        )
+
     async def get_tv_show(self, tmdb_id: int) -> Dict:
         """Get detailed TV show information."""
-        return await self._request(f"/tv/{tmdb_id}", params={"append_to_response": "credits,keywords"})
-    
+        return await self._request(
+            f"/tv/{tmdb_id}", params={"append_to_response": "credits,keywords"}
+        )
+
     async def get_popular_movies(self, page: int = 1) -> Dict:
         """Get popular movies."""
         return await self._request("/movie/popular", params={"page": page})
-    
+
     async def get_popular_tv_shows(self, page: int = 1) -> Dict:
         """Get popular TV shows."""
         return await self._request("/tv/popular", params={"page": page})
-    
+
     async def get_top_rated_movies(self, page: int = 1) -> Dict:
         """Get top rated movies."""
         return await self._request("/movie/top_rated", params={"page": page})
-    
+
     async def get_top_rated_tv_shows(self, page: int = 1) -> Dict:
         """Get top rated TV shows."""
         return await self._request("/tv/top_rated", params={"page": page})
-    
+
     async def discover_movies(
         self,
         page: int = 1,
@@ -93,7 +101,7 @@ class TMDBClient:
     ) -> Dict:
         """
         Discover movies with filters.
-        
+
         Args:
             page: Page number
             sort_by: Sort order (popularity.desc, vote_average.desc, etc.)
@@ -107,16 +115,16 @@ class TMDBClient:
             "include_adult": False,
             "include_video": False,
         }
-        
+
         if year:
             params["primary_release_year"] = year
         if with_genres:
             params["with_genres"] = with_genres
         if vote_average_gte:
             params["vote_average.gte"] = vote_average_gte
-        
+
         return await self._request("/discover/movie", params=params)
-    
+
     async def discover_tv_shows(
         self,
         page: int = 1,
@@ -127,7 +135,7 @@ class TMDBClient:
     ) -> Dict:
         """
         Discover TV shows with filters.
-        
+
         Args:
             page: Page number
             sort_by: Sort order
@@ -140,25 +148,22 @@ class TMDBClient:
             "sort_by": sort_by,
             "include_adult": False,
         }
-        
+
         if first_air_date_year:
             params["first_air_date_year"] = first_air_date_year
         if with_genres:
             params["with_genres"] = with_genres
         if vote_average_gte:
             params["vote_average.gte"] = vote_average_gte
-        
+
         return await self._request("/discover/tv", params=params)
-    
+
     async def get_movies_released_in_date_range(
-        self,
-        start_date: datetime,
-        end_date: datetime,
-        page: int = 1
+        self, start_date: datetime, end_date: datetime, page: int = 1
     ) -> Dict:
         """
         Get movies released between two dates.
-        
+
         Args:
             start_date: Start date
             end_date: End date
@@ -170,18 +175,15 @@ class TMDBClient:
             "primary_release_date.gte": start_date.strftime("%Y-%m-%d"),
             "primary_release_date.lte": end_date.strftime("%Y-%m-%d"),
         }
-        
+
         return await self._request("/discover/movie", params=params)
-    
+
     async def get_tv_shows_aired_in_date_range(
-        self,
-        start_date: datetime,
-        end_date: datetime,
-        page: int = 1
+        self, start_date: datetime, end_date: datetime, page: int = 1
     ) -> Dict:
         """
         Get TV shows that first aired between two dates.
-        
+
         Args:
             start_date: Start date
             end_date: End date
@@ -193,95 +195,97 @@ class TMDBClient:
             "first_air_date.gte": start_date.strftime("%Y-%m-%d"),
             "first_air_date.lte": end_date.strftime("%Y-%m-%d"),
         }
-        
+
         return await self._request("/discover/tv", params=params)
-    
+
     async def get_new_releases_this_week(self, media_type: MediaType) -> List[Dict]:
         """
         Get movies or TV shows released in the past week.
-        
+
         Args:
             media_type: 'movie' or 'tv'
-        
+
         Returns:
             List of media items
         """
         end_date = datetime.now()
         start_date = end_date - timedelta(days=7)
-        
+
         all_results = []
         page = 1
-        
+
         while page <= 5:  # Limit to 5 pages (100 items)
             if media_type == "movie":
-                response = await self.get_movies_released_in_date_range(start_date, end_date, page)
+                response = await self.get_movies_released_in_date_range(
+                    start_date, end_date, page
+                )
             else:
-                response = await self.get_tv_shows_aired_in_date_range(start_date, end_date, page)
-            
+                response = await self.get_tv_shows_aired_in_date_range(
+                    start_date, end_date, page
+                )
+
             results = response.get("results", [])
             if not results:
                 break
-            
+
             all_results.extend(results)
-            
+
             if page >= response.get("total_pages", 1):
                 break
-            
+
             page += 1
-        
+
         logger.info(f"Found {len(all_results)} new {media_type} releases this week")
         return all_results
-    
+
     async def get_popular_items(
-        self,
-        media_type: MediaType,
-        limit: int = 10000
+        self, media_type: MediaType, limit: int = 10000
     ) -> List[Dict]:
         """
         Get popular movies or TV shows.
-        
+
         Args:
             media_type: 'movie' or 'tv'
             limit: Maximum number of items to fetch
-        
+
         Returns:
             List of media items
         """
         all_results = []
         page = 1
         max_pages = min(500, (limit // 20) + 1)  # TMDB limits to 500 pages
-        
+
         while page <= max_pages:
             if media_type == "movie":
                 response = await self.get_popular_movies(page)
             else:
                 response = await self.get_popular_tv_shows(page)
-            
+
             results = response.get("results", [])
             if not results:
                 break
-            
+
             all_results.extend(results)
-            
+
             if len(all_results) >= limit:
                 break
-            
+
             if page >= response.get("total_pages", 1):
                 break
-            
+
             page += 1
-        
+
         logger.info(f"Fetched {len(all_results)} popular {media_type} items")
         return all_results[:limit]
-    
+
     def extract_metadata(self, item: Dict, media_type: MediaType) -> Dict:
         """
         Extract relevant metadata from TMDB response.
-        
+
         Args:
             item: TMDB API response
             media_type: 'movie' or 'tv'
-        
+
         Returns:
             Cleaned metadata dictionary
         """
@@ -293,7 +297,7 @@ class TMDBClient:
             title = item.get("name", "Unknown")
             original_title = item.get("original_name")
             release_date = item.get("first_air_date", "")
-        
+
         return {
             "tmdb_id": item["id"],
             "media_type": media_type,
@@ -307,8 +311,12 @@ class TMDBClient:
             "vote_average": item.get("vote_average"),
             "vote_count": item.get("vote_count"),
             "popularity": item.get("popularity"),
-            "number_of_seasons": item.get("number_of_seasons") if media_type == "tv" else None,
-            "number_of_episodes": item.get("number_of_episodes") if media_type == "tv" else None,
+            "number_of_seasons": (
+                item.get("number_of_seasons") if media_type == "tv" else None
+            ),
+            "number_of_episodes": (
+                item.get("number_of_episodes") if media_type == "tv" else None
+            ),
             "raw_data": item,
         }
 

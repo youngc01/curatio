@@ -6,7 +6,7 @@ Provides database engine, session factory, and helper functions.
 
 from contextlib import contextmanager
 from typing import Generator
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import Pool
 from loguru import logger
@@ -36,11 +36,7 @@ def set_sqlite_pragma(dbapi_conn, connection_record):
 
 
 # Session factory
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine
-)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def create_tables():
@@ -61,7 +57,7 @@ def drop_tables():
 def get_db() -> Generator[Session, None, None]:
     """
     Get database session as context manager.
-    
+
     Usage:
         with get_db() as db:
             user = db.query(User).first()
@@ -81,7 +77,7 @@ def get_db() -> Generator[Session, None, None]:
 def get_db_session() -> Session:
     """
     Get database session (must be closed manually).
-    
+
     Usage:
         db = get_db_session()
         try:
@@ -97,7 +93,7 @@ def get_db_session() -> Session:
 def get_db_dependency():
     """
     FastAPI dependency for database session.
-    
+
     Usage:
         @app.get("/users")
         def get_users(db: Session = Depends(get_db_dependency)):
@@ -115,7 +111,7 @@ def check_database_connection() -> bool:
     try:
         with get_db() as db:
             # Execute simple query
-            db.execute("SELECT 1")
+            db.execute(text("SELECT 1"))
         logger.info("Database connection successful")
         return True
     except Exception as e:
@@ -129,10 +125,10 @@ def init_database():
         # Check connection
         if not check_database_connection():
             raise Exception("Cannot connect to database")
-        
+
         # Create tables
         create_tables()
-        
+
         logger.info("Database initialized successfully")
         return True
     except Exception as e:
