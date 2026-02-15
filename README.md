@@ -109,18 +109,27 @@ https://yourdomain.com/manifest/universal.json
 
 ## Ongoing Maintenance (Free Forever)
 
-### Weekly Updates (Automated)
+### Daily Updates (Built-In Scheduler)
 
-```bash
-# Add to crontab (runs every Monday at 3 AM)
-0 3 * * 1 cd /path/to/stremio-ai-addon && docker-compose run --rm worker python workers/weekly_update.py
+Enable the in-app daily update scheduler — no cron needed:
+
+```env
+# In your .env file
+DAILY_UPDATE_ENABLED=true
+DAILY_UPDATE_TIME=03:00  # HH:MM in UTC
 ```
 
-This:
-- Tags new releases from the past week (50-100 movies, 20-30 shows)
-- Updates all catalogs
+The scheduler runs inside the app process and automatically:
+- Fetches new releases from TMDB daily
+- Tags them with Gemini AI
+- Regenerates all universal catalogs
 - Cost: $0 (within free tier)
-- Time: ~5 minutes
+- Time: ~5 minutes per run
+
+**Manual fallback:**
+```bash
+docker-compose run --rm worker python workers/daily_update.py
+```
 
 ## Project Structure
 
@@ -137,7 +146,7 @@ stremio-ai-addon/
 │   └── catalog_generator.py # Catalog builder
 ├── workers/
 │   ├── initial_build.py     # One-time $5 build
-│   └── weekly_update.py     # Free weekly updates
+│   └── daily_update.py      # Free daily updates
 ├── tests/
 │   ├── test_tagging.py      # Gemini tests
 │   ├── test_catalogs.py     # Catalog tests
@@ -323,7 +332,7 @@ Solution: Run initial build first: docker-compose run --rm worker python workers
 ### Scalability
 - Supports 5,000+ concurrent users
 - PostgreSQL handles all catalog queries
-- No Gemini calls during user browsing (only during weekly updates)
+- No Gemini calls during user browsing (only during daily updates)
 
 ## Security
 

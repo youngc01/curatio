@@ -81,7 +81,7 @@ stremio-ai-addon/
 │   └── catalog_generator.py # Catalog builder (280 lines)
 ├── workers/
 │   ├── initial_build.py     # One-time $5 build (340 lines)
-│   └── weekly_update.py     # Weekly maintenance (TBD)
+│   └── daily_update.py      # Daily content updates
 ├── tests/
 │   └── test_all.py          # Comprehensive tests (450 lines)
 ├── .github/workflows/
@@ -148,6 +148,12 @@ stremio-ai-addon/
    - Docker image building
    - GitHub Container Registry
    - Deployment notifications
+
+8. **Daily Update Scheduler**
+   - In-app asyncio scheduler (no cron needed)
+   - Controlled via `DAILY_UPDATE_ENABLED` and `DAILY_UPDATE_TIME` env vars
+   - Fetches new TMDB releases, tags via Gemini, regenerates catalogs
+   - Runs within Gemini free tier ($0/month)
 
 ## 🎨 Category Examples
 
@@ -268,15 +274,17 @@ All tests passing ✅
 
 ## 🔄 Maintenance
 
-### Weekly Updates (Automated)
-```bash
-# Add to crontab
-0 3 * * 1 docker-compose run --rm worker python workers/weekly_update.py
+### Daily Updates (Built-In Scheduler)
+```env
+# In .env
+DAILY_UPDATE_ENABLED=true
+DAILY_UPDATE_TIME=03:00
 ```
-- Tags ~500 new releases
+- Runs inside the app process (no cron needed)
+- Tags new TMDB releases daily
 - Updates all catalogs
 - Cost: $0 (free tier)
-- Time: ~5 minutes
+- Time: ~5 minutes per run
 
 ### Monthly Tasks
 - Check logs
@@ -312,7 +320,7 @@ All tests passing ✅
 ## 🔮 Future Enhancements
 
 ### Phase 2 (Optional)
-- [ ] Weekly update worker
+- [x] ~~Weekly update worker~~ → Daily update scheduler (completed)
 - [ ] User preferences UI
 - [ ] Catalog refresh on demand
 - [ ] Email notifications
