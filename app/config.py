@@ -74,6 +74,14 @@ class Settings(BaseSettings):
     workers: int = Field(4, description="Number of Uvicorn workers")
     cache_ttl: int = Field(3600, description="Cache TTL in seconds")
 
+    # Daily Update Scheduler
+    daily_update_enabled: bool = Field(
+        False, description="Enable daily content update scheduler"
+    )
+    daily_update_time: str = Field(
+        "03:00", description="Time to run daily update in HH:MM format (UTC)"
+    )
+
     # Development
     skip_api_validation: bool = Field(
         False, description="Skip API key validation (testing only)"

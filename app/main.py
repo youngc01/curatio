@@ -4,6 +4,8 @@ Main FastAPI application for Stremio AI Addon.
 Provides Stremio manifest and catalog endpoints.
 """
 
+import asyncio
+
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -57,6 +59,16 @@ async def startup_event():
         logger.error(f"Database initialization failed: {e}")
         raise
 
+    # Start daily update scheduler if enabled
+    if settings.daily_update_enabled:
+        from app.scheduler import run_scheduler
+
+        app.state.scheduler_task = asyncio.create_task(run_scheduler())
+        logger.info("Daily update scheduler enabled")
+    else:
+        app.state.scheduler_task = None
+        logger.info("Daily update scheduler disabled (set DAILY_UPDATE_ENABLED=true)")
+
     logger.info(f"Addon ready at {settings.base_url}")
 
 
@@ -64,6 +76,15 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup on shutdown."""
     logger.info("Shutting down Stremio AI Addon...")
+
+    # Cancel scheduler if running
+    if getattr(app.state, "scheduler_task", None) is not None:
+        app.state.scheduler_task.cancel()
+        try:
+            await app.state.scheduler_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Scheduler stopped")
 
 
 @app.get("/")
