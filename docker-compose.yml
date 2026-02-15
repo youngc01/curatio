@@ -29,6 +29,8 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgresql://postgres:password@postgres:5432/stremio_ai
+      - DAILY_UPDATE_ENABLED=${DAILY_UPDATE_ENABLED:-false}
+      - DAILY_UPDATE_TIME=${DAILY_UPDATE_TIME:-03:00}
     ports:
       - "8000:8000"
     volumes:

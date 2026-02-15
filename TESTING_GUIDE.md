@@ -214,6 +214,48 @@ docker-compose run --rm worker python workers/initial_build.py --movies 100000 -
 export GEMINI_PAID_TIER="false"
 ```
 
+## Testing the Daily Update Scheduler
+
+### Run Unit Tests
+
+The scheduler and daily update worker have dedicated tests:
+
+```bash
+# Run scheduler and daily update tests
+pytest tests/test_all.py -v -k "daily or parse_time or seconds_until or filter_new"
+```
+
+Tests cover:
+- `test_parse_time_valid` - Parses "HH:MM" time strings correctly
+- `test_parse_time_invalid` - Rejects malformed time strings
+- `test_seconds_until` - Calculates wait time until next target
+- `test_filter_new_items` - Filters out already-tagged items
+- `test_filter_new_items_all_new` - Passes through all new items
+- `test_filter_new_items_all_existing` - Filters out all existing items
+
+### Manual Test Run
+
+Run the daily update worker manually to verify it works:
+
+```bash
+# Run daily update once (without the scheduler loop)
+docker-compose run --rm worker python workers/daily_update.py
+```
+
+### Enable the Scheduler
+
+```bash
+# In .env
+DAILY_UPDATE_ENABLED=true
+DAILY_UPDATE_TIME=03:00
+
+# Restart the app
+docker-compose up -d
+
+# Check logs for scheduler startup
+docker-compose logs -f app | grep -i "scheduler"
+```
+
 ## Testing Trakt OAuth Flow
 
 ### 1. Setup Ngrok (for local testing)
@@ -475,7 +517,7 @@ Add to crontab for daily health checks:
 # Daily health check
 0 2 * * * curl -f http://localhost:8000/health || echo "Addon health check failed" | mail -s "Stremio Addon Alert" you@email.com
 
-# Weekly catalog count check
+# Daily catalog count check (or use the built-in scheduler instead)
 0 3 * * 0 docker-compose run --rm app python -c "from app.database import get_db; from app.models import UniversalCatalogContent; with get_db() as db: print(f'Catalog items: {db.query(UniversalCatalogContent).count()}')"
 ```
 

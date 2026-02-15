@@ -138,21 +138,32 @@ curl http://localhost:8000/health
 
 **You'll get 40 universal + 10 personalized = 50 categories!**
 
-## Step 6: Weekly Updates (Automated)
+## Step 6: Daily Updates (Automatic)
+
+Enable the built-in daily update scheduler — no cron needed:
 
 ```bash
-# Add to crontab
-crontab -e
+# Add to your .env file
+DAILY_UPDATE_ENABLED=true
+DAILY_UPDATE_TIME=03:00  # HH:MM in UTC (default: 3 AM)
+```
 
-# Add this line (runs every Monday at 3 AM):
-0 3 * * 1 cd /path/to/stremio-ai-addon && docker-compose run --rm worker python workers/weekly_update.py
+Then restart the app:
+```bash
+docker-compose up -d
 ```
 
 **What this does:**
-- Tags new releases from the past week (~500 items)
-- Updates all catalogs
+- Fetches and tags new TMDB releases daily (~50-100 items)
+- Regenerates all universal catalogs
+- Runs inside the app process automatically
 - Costs $0 (within free tier)
-- Takes ~5 minutes
+- Takes ~5 minutes per run
+
+**Manual alternative:**
+```bash
+docker-compose run --rm worker python workers/daily_update.py
+```
 
 ## Troubleshooting
 
