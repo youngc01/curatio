@@ -27,6 +27,20 @@ from app.tmdb_client import tmdb_client, MediaType  # noqa: E402
 from app.gemini_client import gemini_engine  # noqa: E402
 from app.catalog_generator import CatalogGenerator  # noqa: E402
 
+# Pause control — when cleared, the build blocks between batches.
+# Set by default (= not paused). Admin endpoints toggle this.
+pause_event = asyncio.Event()
+pause_event.set()
+
+
+async def check_pause():
+    """Block until the build is unpaused. No-op when not paused."""
+    if not pause_event.is_set():
+        logger.info("Build paused — waiting for resume...")
+        await pause_event.wait()
+        logger.info("Build resumed")
+
+
 # Predefined tags (these are created once)
 PREDEFINED_TAGS = {
     "genre": [
@@ -287,6 +301,7 @@ async def tag_items_batch(
 
             # Pause between batches to avoid rate limiting
             await asyncio.sleep(2)
+            await check_pause()
 
         except Exception as e:
             logger.error(f"Failed to tag batch: {e}")
@@ -346,9 +361,15 @@ async def main(movies_limit: int, shows_limit: int):
     init_database()
 
     with get_db() as db:
-        # Create tagging job record
+        # Create tagging job record (save params upfront for auto-resume)
         job = TaggingJob(
-            job_type="database_build", started_at=start_time, status="running"
+            job_type="database_build",
+            started_at=start_time,
+            status="running",
+            job_metadata={
+                "movies_target": movies_limit,
+                "shows_target": shows_limit,
+            },
         )
         db.add(job)
         db.commit()
@@ -382,10 +403,6 @@ async def main(movies_limit: int, shows_limit: int):
             job.status = "completed"
             job.items_processed = movies_processed + shows_processed
             job.items_failed = movies_failed + shows_failed
-            job.job_metadata = {
-                "movies_target": movies_limit,
-                "shows_target": shows_limit,
-            }
             db.commit()
 
             # Summary

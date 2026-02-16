@@ -111,6 +111,11 @@ def _start_log_capture():
                 "remaining",
                 "processed",
                 "succeeded",
+                "paused",
+                "Paused",
+                "resumed",
+                "Resumed",
+                "Auto-resum",
             )
         ),
     )
@@ -468,6 +473,8 @@ async def trigger_daily_update(request: Request, _=Depends(verify_admin)):
 @router.get("/api/build/status")
 async def get_build_status(request: Request, _=Depends(verify_admin)):
     """Get current build progress."""
+    from workers.initial_build import pause_event
+
     with get_db() as db:
         running_job = (
             db.query(TaggingJob)
@@ -493,6 +500,7 @@ async def get_build_status(request: Request, _=Depends(verify_admin)):
 
             return {
                 "running": True,
+                "paused": not pause_event.is_set(),
                 "job_type": running_job.job_type,
                 "started_at": running_job.started_at.isoformat(),
                 "elapsed_seconds": int(elapsed),
@@ -501,7 +509,7 @@ async def get_build_status(request: Request, _=Depends(verify_admin)):
             }
 
     task_running = _active_build_task is not None and not _active_build_task.done()
-    return {"running": task_running}
+    return {"running": task_running, "paused": False}
 
 
 def _mark_running_jobs_cancelled():
@@ -515,6 +523,159 @@ def _mark_running_jobs_cancelled():
             db.commit()
     except Exception as exc:
         logger.error(f"Failed to mark jobs cancelled: {exc}")
+
+
+@router.post("/api/build/pause")
+async def pause_build(request: Request, _=Depends(verify_admin)):
+    """Pause the currently running build between batches."""
+    from workers.initial_build import pause_event
+
+    if _active_build_task is None or _active_build_task.done():
+        # Check if there's a DB-level running job (orphaned after restart)
+        with get_db() as db:
+            running = db.query(TaggingJob).filter(TaggingJob.status == "running").first()
+            if not running:
+                raise HTTPException(404, "No build is currently running")
+
+    pause_event.clear()
+
+    # Persist to DB so pause survives container restart
+    with get_db() as db:
+        existing = (
+            db.query(AdminSetting).filter(AdminSetting.key == "BUILD_PAUSED").first()
+        )
+        if existing:
+            existing.value = "true"
+            existing.updated_at = datetime.utcnow()
+        else:
+            db.add(
+                AdminSetting(
+                    key="BUILD_PAUSED", value="true", updated_at=datetime.utcnow()
+                )
+            )
+        db.commit()
+
+    logger.info("Build paused by user")
+    return {"status": "paused"}
+
+
+@router.post("/api/build/resume")
+async def resume_build(request: Request, _=Depends(verify_admin)):
+    """Resume a paused build. If the container restarted while paused, re-launches it."""
+    global _active_build_task
+    from workers.initial_build import pause_event
+
+    # Clear the pause flag in DB
+    with get_db() as db:
+        existing = (
+            db.query(AdminSetting).filter(AdminSetting.key == "BUILD_PAUSED").first()
+        )
+        if existing:
+            existing.value = "false"
+            existing.updated_at = datetime.utcnow()
+            db.commit()
+
+    # If the build task is alive, just unpause it
+    if _active_build_task is not None and not _active_build_task.done():
+        pause_event.set()
+        logger.info("Build resumed by user")
+        return {"status": "resumed"}
+
+    # No live task — check for an orphaned running job (container restarted while paused)
+    with get_db() as db:
+        orphaned = (
+            db.query(TaggingJob)
+            .filter(TaggingJob.status == "running")
+            .order_by(TaggingJob.started_at.desc())
+            .first()
+        )
+        if orphaned and orphaned.job_metadata:
+            movies = orphaned.job_metadata.get("movies_target", 100000)
+            shows = orphaned.job_metadata.get("shows_target", 50000)
+        else:
+            raise HTTPException(404, "No paused build found to resume")
+
+    # Mark orphaned job and re-launch
+    pause_event.set()
+    _relaunch_build(movies, shows, reason="Resumed after container restart")
+    logger.info("Build re-launched after resume (container had restarted)")
+    return {"status": "resumed", "relaunched": True}
+
+
+def _relaunch_build(movies: int, shows: int, reason: str = "Auto-resumed"):
+    """Re-launch the build, marking any orphaned jobs."""
+    global _active_build_task
+
+    with get_db() as db:
+        for job in db.query(TaggingJob).filter(TaggingJob.status == "running"):
+            job.status = "cancelled"
+            job.error_message = reason
+            job.completed_at = datetime.utcnow()
+        db.commit()
+
+    _start_log_capture()
+
+    async def _run():
+        try:
+            from workers.initial_build import main as build_main
+
+            await build_main(movies, shows)
+        except asyncio.CancelledError:
+            logger.warning("Build task was cancelled by user")
+            _mark_running_jobs_cancelled()
+        except Exception as e:
+            logger.error(f"Build task failed: {e}")
+        finally:
+            _stop_log_capture()
+
+    _active_build_task = asyncio.create_task(_run())
+
+
+async def auto_resume_build():
+    """Called on app startup. Re-launches orphaned builds if not paused."""
+    from workers.initial_build import pause_event
+
+    with get_db() as db:
+        orphaned = (
+            db.query(TaggingJob)
+            .filter(TaggingJob.status == "running")
+            .order_by(TaggingJob.started_at.desc())
+            .first()
+        )
+        if not orphaned:
+            return
+
+        # Check if build was paused when container went down
+        paused_setting = (
+            db.query(AdminSetting).filter(AdminSetting.key == "BUILD_PAUSED").first()
+        )
+        is_paused = paused_setting and paused_setting.value == "true"
+
+        if not orphaned.job_metadata:
+            # Can't resume without params — mark as interrupted
+            orphaned.status = "cancelled"
+            orphaned.error_message = "Interrupted by container restart (no params to resume)"
+            orphaned.completed_at = datetime.utcnow()
+            db.commit()
+            logger.warning("Found orphaned build job but no metadata — marked cancelled")
+            return
+
+        movies = orphaned.job_metadata.get("movies_target", 100000)
+        shows = orphaned.job_metadata.get("shows_target", 50000)
+
+    if is_paused:
+        pause_event.clear()
+        logger.info(
+            f"Found paused build (movies={movies}, shows={shows}). "
+            "Waiting for manual resume via admin panel."
+        )
+        # Re-launch the build but it will immediately block on pause_event
+        _relaunch_build(movies, shows, reason="Container restarted while paused")
+    else:
+        logger.info(
+            f"Auto-resuming interrupted build (movies={movies}, shows={shows})..."
+        )
+        _relaunch_build(movies, shows, reason="Container restarted — auto-resuming")
 
 
 @router.post("/api/build/stop")
@@ -552,6 +713,20 @@ async def stop_build(request: Request, _=Depends(verify_admin)):
     _mark_running_jobs_cancelled()
     _stop_log_capture()
     _active_build_task = None
+
+    # Clear pause flag so a future build starts clean
+    with get_db() as db:
+        paused = (
+            db.query(AdminSetting).filter(AdminSetting.key == "BUILD_PAUSED").first()
+        )
+        if paused:
+            paused.value = "false"
+            db.commit()
+
+    # Ensure pause_event is reset for next build
+    from workers.initial_build import pause_event
+
+    pause_event.set()
 
     logger.info("Build stopped by user")
     return {"status": "stopped"}
@@ -1109,7 +1284,9 @@ tr:last-child td{border-bottom:none}
         <div id="build-status-content">
           <p style="color:#8b949e">No build currently running.</p>
         </div>
-        <div id="build-stop-row" style="display:none;margin-top:12px">
+        <div id="build-stop-row" style="display:none;margin-top:12px;gap:12px">
+          <button class="btn btn-secondary btn-sm" id="btn-pause-build" onclick="pauseBuild()" style="display:none">Pause Build</button>
+          <button class="btn btn-primary btn-sm" id="btn-resume-build" onclick="resumeBuild()" style="display:none">Resume Build</button>
           <button class="btn btn-danger btn-sm" id="btn-stop-build" onclick="stopBuild()">Stop Build</button>
         </div>
       </div>
@@ -1455,6 +1632,39 @@ async function stopBuild() {
   }
 }
 
+async function pauseBuild() {
+  const btn = document.getElementById('btn-pause-build');
+  btn.disabled = true;
+  btn.textContent = 'Pausing...';
+  try {
+    await api('POST', '/admin/api/build/pause');
+    toast('Build paused — will pause after current batch finishes', 'success');
+    loadBuildStatus();
+  } catch (e) {
+    toast('Failed to pause: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Pause Build';
+  }
+}
+
+async function resumeBuild() {
+  const btn = document.getElementById('btn-resume-build');
+  btn.disabled = true;
+  btn.textContent = 'Resuming...';
+  try {
+    const res = await api('POST', '/admin/api/build/resume');
+    toast(res.relaunched ? 'Build re-launched and resumed' : 'Build resumed', 'success');
+    loadBuildStatus();
+    if (res.relaunched) startBuildPolling();
+  } catch (e) {
+    toast('Failed to resume: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Resume Build';
+  }
+}
+
 let buildWs = null;
 
 function startBuildPolling() {
@@ -1533,17 +1743,24 @@ async function loadBuildStatus() {
     if (s.running) {
       document.getElementById('btn-start-build').disabled = true;
       document.getElementById('btn-daily-update').disabled = true;
-      stopRow.style.display = 'block';
+      stopRow.style.display = 'flex';
       logCard.style.display = 'block';
 
+      // Show/hide pause vs resume button
+      document.getElementById('btn-pause-build').style.display = s.paused ? 'none' : '';
+      document.getElementById('btn-resume-build').style.display = s.paused ? '' : 'none';
+
       // Ensure log polling is running
-      if (!logPollTimer) {
+      if (!logPollTimer && !s.paused) {
         logPollTimer = setInterval(pollLogs, 3000);
         pollLogs();
       }
 
-      el.innerHTML =
-        '<div class="alert alert-info"><span class="spinner"></span> Build in progress (' + (s.job_type || 'build') + ')</div>' +
+      var statusMsg = s.paused
+        ? '<div class="alert" style="background:#d2992222;border:1px solid #d2992255;color:#d29922">Build paused — click Resume to continue. Safe to restart container.</div>'
+        : '<div class="alert alert-info"><span class="spinner"></span> Build in progress (' + (s.job_type || 'build') + ')</div>';
+
+      el.innerHTML = statusMsg +
         '<div class="build-info">' +
           '<div class="build-stat"><div class="val">' + fmtNum(s.movies_tagged) + '</div><div class="lbl">Movies Tagged</div></div>' +
           '<div class="build-stat"><div class="val">' + fmtNum(s.shows_tagged) + '</div><div class="lbl">Shows Tagged</div></div>' +
