@@ -104,6 +104,11 @@ async def startup_event():
     # Load admin settings from database (overrides env vars)
     load_settings_from_db()
 
+    # Auto-resume interrupted builds (container restart recovery)
+    from app.admin import auto_resume_build
+
+    await auto_resume_build()
+
     # Start daily update scheduler if enabled
     if settings.daily_update_enabled:
         from app.scheduler import run_scheduler

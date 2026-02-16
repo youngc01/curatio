@@ -60,7 +60,10 @@ class GeminiTaggingEngine:
 
         # Configure Gemini
         genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel(self.model_name)
+        self.model = genai.GenerativeModel(
+            self.model_name,
+            generation_config=genai.GenerationConfig(max_output_tokens=32768),
+        )
 
         # Tag categories
         self.tag_categories = {
