@@ -6,6 +6,7 @@ Protected by master password authentication.
 """
 
 import asyncio
+import collections
 import secrets
 from datetime import datetime, timedelta
 from typing import Optional
@@ -34,6 +35,83 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 _admin_sessions: dict[str, datetime] = {}
 _active_build_task: Optional[asyncio.Task] = None
 SESSION_DURATION = timedelta(hours=24)
+
+# ---- Build log ring buffer ----
+_build_logs: collections.deque[str] = collections.deque(maxlen=2000)
+_build_log_sink_id: Optional[int] = None
+
+
+def _start_log_capture():
+    """Add a loguru sink that captures build-related log lines."""
+    global _build_log_sink_id
+    if _build_log_sink_id is not None:
+        return  # already capturing
+
+    _build_logs.clear()
+
+    def _sink(message):
+        _build_logs.append(str(message).rstrip())
+
+    _build_log_sink_id = logger.add(
+        _sink,
+        format="{time:HH:mm:ss} | {level:<7} | {message}",
+        level="DEBUG",
+        filter=lambda record: any(
+            kw in record["message"]
+            for kw in (
+                "Fetch",
+                "fetch",
+                "Tag",
+                "tag",
+                "Progress",
+                "Stor",
+                "stor",
+                "Generat",
+                "generat",
+                "Regenerat",
+                "regenerat",
+                "Dedup",
+                "dedup",
+                "Skip",
+                "skip",
+                "BUILD",
+                "build",
+                "DAILY",
+                "Daily",
+                "daily",
+                "catalog",
+                "Catalog",
+                "COMPLETE",
+                "complete",
+                "Failed",
+                "failed",
+                "Error",
+                "error",
+                "items",
+                "batch",
+                "Batch",
+                "TMDB",
+                "Gemini",
+                "gemini",
+                "Step",
+                "====",
+                "Target",
+                "Estimated",
+                "Duration",
+                "remaining",
+                "processed",
+                "succeeded",
+            )
+        ),
+    )
+
+
+def _stop_log_capture():
+    """Remove the loguru sink."""
+    global _build_log_sink_id
+    if _build_log_sink_id is not None:
+        logger.remove(_build_log_sink_id)
+        _build_log_sink_id = None
 
 
 # ---- Authentication ----
@@ -313,13 +391,20 @@ async def start_build(request: Request, _=Depends(verify_admin)):
     if _active_build_task and not _active_build_task.done():
         raise HTTPException(409, "A build task is already active")
 
+    _start_log_capture()
+
     async def _run():
         try:
             from workers.initial_build import main as build_main
 
             await build_main(movies, shows)
+        except asyncio.CancelledError:
+            logger.warning("Build task was cancelled by user")
+            _mark_running_jobs_cancelled()
         except Exception as e:
             logger.error(f"Build task failed: {e}")
+        finally:
+            _stop_log_capture()
 
     _active_build_task = asyncio.create_task(_run())
     logger.info(f"Initial build started: {movies} movies, {shows} shows")
@@ -334,13 +419,20 @@ async def trigger_daily_update(request: Request, _=Depends(verify_admin)):
     if _active_build_task and not _active_build_task.done():
         raise HTTPException(409, "A build task is already active")
 
+    _start_log_capture()
+
     async def _run():
         try:
             from workers.daily_update import run_daily_update
 
             await run_daily_update()
+        except asyncio.CancelledError:
+            logger.warning("Daily update was cancelled by user")
+            _mark_running_jobs_cancelled()
         except Exception as e:
             logger.error(f"Daily update task failed: {e}")
+        finally:
+            _stop_log_capture()
 
     _active_build_task = asyncio.create_task(_run())
     logger.info("Manual daily update triggered")
@@ -384,6 +476,199 @@ async def get_build_status(request: Request, _=Depends(verify_admin)):
 
     task_running = _active_build_task is not None and not _active_build_task.done()
     return {"running": task_running}
+
+
+def _mark_running_jobs_cancelled():
+    """Mark any running TaggingJob rows as cancelled."""
+    try:
+        with get_db() as db:
+            for job in db.query(TaggingJob).filter(TaggingJob.status == "running"):
+                job.status = "cancelled"
+                job.error_message = "Cancelled by user"
+                job.completed_at = datetime.utcnow()
+            db.commit()
+    except Exception as exc:
+        logger.error(f"Failed to mark jobs cancelled: {exc}")
+
+
+@router.post("/api/build/stop")
+async def stop_build(request: Request, _=Depends(verify_admin)):
+    """Cancel the currently running build task."""
+    global _active_build_task
+
+    if not _active_build_task or _active_build_task.done():
+        raise HTTPException(404, "No build is currently running")
+
+    _active_build_task.cancel()
+    # Wait briefly for the task to finish its cancellation handler
+    try:
+        await asyncio.wait_for(_active_build_task, timeout=5.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
+
+    # If the task didn't mark the jobs itself, do it here as a safety net
+    _mark_running_jobs_cancelled()
+    _stop_log_capture()
+    _active_build_task = None
+
+    logger.info("Build stopped by user")
+    return {"status": "stopped"}
+
+
+@router.get("/api/build/logs")
+async def get_build_logs(
+    request: Request,
+    _=Depends(verify_admin),
+    after: int = 0,
+):
+    """
+    Return captured build log lines.
+
+    Query param 'after' returns only lines after that index,
+    so the UI can poll incrementally without re-fetching everything.
+    """
+    logs = list(_build_logs)
+    total = len(logs)
+
+    if after > 0:
+        logs = logs[after:]
+
+    return {"lines": logs, "total": total}
+
+
+@router.get("/api/debug")
+async def debug_catalogs(request: Request, _=Depends(verify_admin)):
+    """Full diagnostic of the catalog pipeline to identify issues."""
+    from app.catalog_generator import CatalogGenerator
+
+    with get_db() as db:
+        # Layer 1: Tags
+        tag_count = db.query(func.count(Tag.id)).scalar() or 0
+
+        # Layer 2: MovieTags (tagged items)
+        movies_tagged = (
+            db.query(func.count(func.distinct(MovieTag.tmdb_id)))
+            .filter(MovieTag.media_type == "movie")
+            .scalar()
+            or 0
+        )
+        shows_tagged = (
+            db.query(func.count(func.distinct(MovieTag.tmdb_id)))
+            .filter(MovieTag.media_type == "tv")
+            .scalar()
+            or 0
+        )
+
+        # Layer 3: Metadata
+        metadata_count = db.query(func.count(MediaMetadata.tmdb_id)).scalar() or 0
+
+        # Layer 4: Universal categories
+        categories = (
+            db.query(UniversalCategory)
+            .filter(UniversalCategory.is_active.is_(True))
+            .order_by(UniversalCategory.sort_order)
+            .all()
+        )
+
+        # Layer 5: Pre-computed catalog content
+        total_catalog_items = (
+            db.query(func.count(UniversalCatalogContent.tmdb_id)).scalar() or 0
+        )
+
+        # Per-category breakdown
+        category_details = []
+        generator = CatalogGenerator(db)
+        for cat in categories:
+            content_count = (
+                db.query(func.count(UniversalCatalogContent.tmdb_id))
+                .filter(UniversalCatalogContent.category_id == cat.id)
+                .scalar()
+                or 0
+            )
+            # Check how many items would match the formula (live query)
+            potential_matches = len(generator.generate_universal_catalog(cat, limit=5))
+            category_details.append(
+                {
+                    "id": cat.id,
+                    "name": cat.name,
+                    "media_type": cat.media_type,
+                    "tag_formula": cat.tag_formula,
+                    "pre_computed_items": content_count,
+                    "potential_matches_sample": potential_matches,
+                }
+            )
+
+        # Layer 6: Last tagging job status
+        last_job = (
+            db.query(TaggingJob)
+            .order_by(TaggingJob.started_at.desc())
+            .first()
+        )
+
+        # Build diagnosis
+        issues = []
+        if tag_count == 0:
+            issues.append("No tags exist. Run initial build to create tags.")
+        if movies_tagged == 0 and shows_tagged == 0:
+            issues.append("No items have been tagged yet.")
+        if metadata_count == 0:
+            issues.append(
+                "No metadata cached. Items won't show posters/titles in Stremio."
+            )
+        if len(categories) == 0:
+            issues.append("No active universal categories found.")
+        if total_catalog_items == 0 and (movies_tagged > 0 or shows_tagged > 0):
+            issues.append(
+                "CRITICAL: Items are tagged but catalog content table is empty. "
+                "The catalog generation step likely didn't run. "
+                "Use 'Regenerate Catalogs' to fix this."
+            )
+
+    return {
+        "pipeline": {
+            "tags": tag_count,
+            "movies_tagged": movies_tagged,
+            "shows_tagged": shows_tagged,
+            "metadata_cached": metadata_count,
+            "active_categories": len(categories),
+            "pre_computed_catalog_items": total_catalog_items,
+        },
+        "categories": category_details,
+        "last_job": {
+            "type": last_job.job_type if last_job else None,
+            "status": last_job.status if last_job else None,
+            "error": (last_job.error_message or "")[:500] if last_job else None,
+        },
+        "issues": issues,
+        "healthy": len(issues) == 0,
+    }
+
+
+@router.post("/api/catalogs/regenerate")
+async def regenerate_catalogs(request: Request, _=Depends(verify_admin)):
+    """Regenerate all universal catalogs from existing tags (no re-tagging needed)."""
+    from app.catalog_generator import CatalogGenerator
+
+    with get_db() as db:
+        # Sanity check: are there tagged items?
+        tagged_count = (
+            db.query(func.count(func.distinct(MovieTag.tmdb_id))).scalar() or 0
+        )
+        if tagged_count == 0:
+            raise HTTPException(
+                400,
+                "No tagged items found. Run a build first to tag movies/shows.",
+            )
+
+        generator = CatalogGenerator(db)
+        generator.regenerate_all_universal_catalogs()
+
+        new_total = (
+            db.query(func.count(UniversalCatalogContent.tmdb_id)).scalar() or 0
+        )
+
+    logger.info(f"Catalog regeneration complete: {new_total} total items")
+    return {"status": "ok", "total_catalog_items": new_total}
 
 
 # ---- HTML Page ----
@@ -492,6 +777,13 @@ tr:last-child td{border-bottom:none}
 /* Build progress */
 .progress-bar{width:100%;height:8px;background:#21262d;border-radius:4px;overflow:hidden;margin:12px 0}
 .progress-fill{height:100%;background:linear-gradient(90deg,#e50914,#ff6b6b);border-radius:4px;transition:width .5s ease}
+
+/* Log viewer */
+.log-viewer{background:#010409;border:1px solid #30363d;border-radius:8px;padding:12px;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:12px;line-height:1.6;color:#8b949e;max-height:400px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+.log-viewer .log-error{color:#f85149}
+.log-viewer .log-warning{color:#d29922}
+.log-viewer .log-info{color:#8b949e}
+.log-viewer .log-progress{color:#3fb950}
 .build-info{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
 .build-stat{text-align:center;padding:16px;background:#0d1117;border-radius:8px}
 .build-stat .val{font-size:24px;font-weight:700;color:#e6edf3}
@@ -679,6 +971,23 @@ tr:last-child td{border-bottom:none}
         <div id="build-status-content">
           <p style="color:#8b949e">No build currently running.</p>
         </div>
+        <div id="build-stop-row" style="display:none;margin-top:12px">
+          <button class="btn btn-danger btn-sm" id="btn-stop-build" onclick="stopBuild()">Stop Build</button>
+        </div>
+      </div>
+
+      <div class="card" id="build-log-card" style="display:none">
+        <h3>Build Log <span style="font-weight:400;font-size:12px;color:#8b949e" id="log-count"></span></h3>
+        <div class="log-viewer" id="log-viewer"></div>
+      </div>
+
+      <div class="card" id="debug-card">
+        <h3>Catalog Pipeline Diagnostic</h3>
+        <div id="debug-content"><p style="color:#8b949e">Click to run diagnostic...</p></div>
+        <div style="margin-top:16px;display:flex;gap:12px">
+          <button class="btn btn-secondary" onclick="runDebug()">Run Diagnostic</button>
+          <button class="btn btn-primary" id="btn-regenerate" onclick="regenerateCatalogs()">Regenerate Catalogs</button>
+        </div>
       </div>
 
       <div class="card-row">
@@ -790,7 +1099,8 @@ function fmtDuration(secs) {
 
 function badge(status) {
   const cls = status === 'running' ? 'badge-running' : status === 'completed' ? 'badge-completed' : 'badge-failed';
-  return '<span class="badge ' + cls + '">' + status + '</span>';
+  const label = status === 'cancelled' ? 'cancelled' : status;
+  return '<span class="badge ' + cls + '">' + label + '</span>';
 }
 
 // ---- Tab Navigation ----
@@ -837,6 +1147,16 @@ async function checkAuth() {
 // ---- Data Loading ----
 async function loadAll() {
   await Promise.all([loadStats(), loadSettings(), loadBuildStatus()]);
+  // If a build is running, start polling logs automatically
+  try {
+    const s = await api('GET', '/admin/api/build/status');
+    if (s.running && !logPollTimer) {
+      logOffset = 0;
+      document.getElementById('log-viewer').innerHTML = '';
+      logPollTimer = setInterval(pollLogs, 3000);
+      pollLogs();
+    }
+  } catch(e) { /* ignore */ }
 }
 
 async function loadStats() {
@@ -943,6 +1263,8 @@ async function saveSchedule() {
 
 // ---- Build ----
 let buildPollTimer = null;
+let logPollTimer = null;
+let logOffset = 0;
 
 async function startBuild() {
   const movies = parseInt(document.getElementById('build-movies').value) || 100000;
@@ -975,19 +1297,82 @@ async function triggerDailyUpdate() {
   }
 }
 
+async function stopBuild() {
+  if (!confirm('Stop the current build? Progress so far will be preserved.')) return;
+  const btn = document.getElementById('btn-stop-build');
+  btn.disabled = true;
+  btn.textContent = 'Stopping...';
+  try {
+    await api('POST', '/admin/api/build/stop');
+    toast('Build stopped', 'success');
+    loadBuildStatus();
+    loadStats();
+  } catch (e) {
+    toast('Failed to stop: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Stop Build';
+  }
+}
+
 function startBuildPolling() {
+  logOffset = 0;
+  document.getElementById('log-viewer').innerHTML = '';
   if (buildPollTimer) clearInterval(buildPollTimer);
+  if (logPollTimer) clearInterval(logPollTimer);
   buildPollTimer = setInterval(loadBuildStatus, 5000);
+  logPollTimer = setInterval(pollLogs, 3000);
+  pollLogs(); // fetch immediately
+}
+
+function stopBuildPolling() {
+  if (buildPollTimer) { clearInterval(buildPollTimer); buildPollTimer = null; }
+  if (logPollTimer) { clearInterval(logPollTimer); logPollTimer = null; }
+}
+
+function colorLogLine(line) {
+  if (/ERROR|Failed|failed|error/i.test(line)) return '<span class="log-error">' + line + '</span>';
+  if (/WARNING|warn/i.test(line)) return '<span class="log-warning">' + line + '</span>';
+  if (/Progress:|processed|items tagged|complete|COMPLETE|succeeded/i.test(line)) return '<span class="log-progress">' + line + '</span>';
+  return '<span class="log-info">' + line + '</span>';
+}
+
+async function pollLogs() {
+  try {
+    const res = await api('GET', '/admin/api/build/logs?after=' + logOffset);
+    if (res.lines.length > 0) {
+      const viewer = document.getElementById('log-viewer');
+      const wasScrolled = viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight < 40;
+      res.lines.forEach(function(line) {
+        // Escape HTML
+        const safe = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        viewer.innerHTML += colorLogLine(safe) + '\\n';
+      });
+      logOffset = res.total;
+      document.getElementById('log-count').textContent = '(' + res.total + ' lines)';
+      if (wasScrolled) viewer.scrollTop = viewer.scrollHeight;
+    }
+  } catch(e) { /* ignore polling errors */ }
 }
 
 async function loadBuildStatus() {
   try {
     const s = await api('GET', '/admin/api/build/status');
     const el = document.getElementById('build-status-content');
+    const stopRow = document.getElementById('build-stop-row');
+    const logCard = document.getElementById('build-log-card');
 
     if (s.running) {
       document.getElementById('btn-start-build').disabled = true;
       document.getElementById('btn-daily-update').disabled = true;
+      stopRow.style.display = 'block';
+      logCard.style.display = 'block';
+
+      // Ensure log polling is running
+      if (!logPollTimer) {
+        logPollTimer = setInterval(pollLogs, 3000);
+        pollLogs();
+      }
 
       el.innerHTML =
         '<div class="alert alert-info"><span class="spinner"></span> Build in progress (' + (s.job_type || 'build') + ')</div>' +
@@ -1000,11 +1385,71 @@ async function loadBuildStatus() {
     } else {
       document.getElementById('btn-start-build').disabled = false;
       document.getElementById('btn-daily-update').disabled = false;
+      stopRow.style.display = 'none';
       el.innerHTML = '<p style="color:#8b949e">No build currently running.</p>';
-      if (buildPollTimer) { clearInterval(buildPollTimer); buildPollTimer = null; }
-      loadStats(); // refresh stats after build completes
+      stopBuildPolling();
+      // Do one final log poll then show card if there are logs
+      pollLogs().then(function() {
+        logCard.style.display = logOffset > 0 ? 'block' : 'none';
+      });
+      loadStats();
     }
   } catch(e) { if (e.message !== 'auth') console.error(e); }
+}
+
+// ---- Diagnostic & Regenerate ----
+async function runDebug() {
+  const el = document.getElementById('debug-content');
+  el.innerHTML = '<div class="alert alert-info"><span class="spinner"></span> Running diagnostic...</div>';
+  try {
+    const d = await api('GET', '/admin/api/debug');
+    const p = d.pipeline;
+    let html = '<div class="build-info" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">' +
+      '<div class="build-stat"><div class="val">' + fmtNum(p.tags) + '</div><div class="lbl">Tags</div></div>' +
+      '<div class="build-stat"><div class="val">' + fmtNum(p.movies_tagged) + '</div><div class="lbl">Movies Tagged</div></div>' +
+      '<div class="build-stat"><div class="val">' + fmtNum(p.shows_tagged) + '</div><div class="lbl">Shows Tagged</div></div>' +
+      '<div class="build-stat"><div class="val">' + fmtNum(p.metadata_cached) + '</div><div class="lbl">Metadata Cached</div></div>' +
+      '<div class="build-stat"><div class="val">' + fmtNum(p.active_categories) + '</div><div class="lbl">Active Categories</div></div>' +
+      '<div class="build-stat"><div class="val">' + fmtNum(p.pre_computed_catalog_items) + '</div><div class="lbl">Catalog Items</div></div>' +
+      '</div>';
+
+    if (d.issues.length > 0) {
+      html += d.issues.map(function(i) { return '<div class="alert alert-error">' + i + '</div>'; }).join('');
+    } else {
+      html += '<div class="alert alert-success">All pipeline stages healthy.</div>';
+    }
+
+    if (d.categories.length > 0) {
+      html += '<details style="margin-top:12px"><summary style="cursor:pointer;color:#58a6ff;font-size:14px">Category Breakdown (' + d.categories.length + ' categories)</summary>' +
+        '<table style="margin-top:8px"><thead><tr><th>Category</th><th>Type</th><th>Pre-computed</th><th>Sample Match</th></tr></thead><tbody>';
+      d.categories.forEach(function(c) {
+        html += '<tr><td>' + c.name + '</td><td>' + c.media_type + '</td><td>' + fmtNum(c.pre_computed_items) + '</td><td>' + c.potential_matches_sample + '</td></tr>';
+      });
+      html += '</tbody></table></details>';
+    }
+
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div class="alert alert-error">Diagnostic failed: ' + e.message + '</div>';
+  }
+}
+
+async function regenerateCatalogs() {
+  if (!confirm('Regenerate all universal catalogs from existing tags?\\n\\nThis rebuilds the pre-computed catalog content using your tagged items. No re-tagging needed.')) return;
+  const btn = document.getElementById('btn-regenerate');
+  btn.disabled = true;
+  btn.textContent = 'Regenerating...';
+  try {
+    const res = await api('POST', '/admin/api/catalogs/regenerate');
+    toast('Catalogs regenerated: ' + fmtNum(res.total_catalog_items) + ' items', 'success');
+    loadStats();
+    runDebug();
+  } catch (e) {
+    toast('Failed: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Regenerate Catalogs';
+  }
 }
 
 // ---- Init ----
