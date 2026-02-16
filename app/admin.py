@@ -613,7 +613,14 @@ async def debug_catalogs(request: Request, _=Depends(verify_admin)):
                 or 0
             )
             # Check how many items would match the formula (live query)
-            potential_matches = len(generator.generate_universal_catalog(cat, limit=5))
+            # Wrapped in try/except because DB contention during active
+            # builds can cause this to fail
+            try:
+                potential_matches = len(
+                    generator.generate_universal_catalog(cat, limit=5)
+                )
+            except Exception:
+                potential_matches = -1  # indicates query failed
             category_details.append(
                 {
                     "id": cat.id,
