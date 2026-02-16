@@ -411,7 +411,7 @@ async def start_build(request: Request, _=Depends(verify_admin)):
             _stop_log_capture()
 
     _active_build_task = asyncio.create_task(_run())
-    logger.info(f"Initial build started: {movies} movies, {shows} shows")
+    logger.info(f"Database build started: {movies} movies, {shows} shows")
     return {"status": "started", "movies": movies, "shows": shows}
 
 
@@ -672,7 +672,7 @@ async def debug_catalogs(request: Request, _=Depends(verify_admin)):
             # Build diagnosis
             issues = []
             if tag_count == 0:
-                issues.append("No tags exist. Run initial build to create tags.")
+                issues.append("No tags exist. Run a database build to create tags.")
             if movies_tagged == 0 and shows_tagged == 0:
                 issues.append("No items have been tagged yet.")
             if metadata_count == 0:
@@ -767,23 +767,23 @@ a{color:#58a6ff;text-decoration:none}
 .login-box h1{font-size:24px;margin-bottom:8px;color:#e6edf3}
 .login-box p{color:#8b949e;margin-bottom:32px;font-size:14px}
 .login-box input{width:100%;padding:12px 16px;background:#0d1117;border:1px solid #30363d;border-radius:8px;color:#e6edf3;font-size:16px;margin-bottom:16px;outline:none;transition:border-color .2s}
-.login-box input:focus{border-color:#e50914}
-.login-box button{width:100%;padding:12px;background:#e50914;color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;transition:background .2s}
-.login-box button:hover{background:#c40812}
+.login-box input:focus{border-color:#a855f7}
+.login-box button{width:100%;padding:12px;background:#a855f7;color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;transition:background .2s}
+.login-box button:hover{background:#7c3aed}
 .login-error{color:#f85149;margin-top:12px;font-size:14px;min-height:20px}
 
 /* Dashboard layout */
 #dashboard{display:none;min-height:100vh}
 .topbar{display:flex;align-items:center;justify-content:space-between;padding:16px 32px;background:#161b22;border-bottom:1px solid #30363d;position:sticky;top:0;z-index:100}
 .topbar h1{font-size:18px;font-weight:600}
-.topbar h1 span{color:#e50914}
+.topbar h1 span{color:#a855f7}
 .topbar-actions{display:flex;gap:12px;align-items:center}
 .topbar-actions button{padding:6px 16px;background:transparent;border:1px solid #30363d;border-radius:6px;color:#8b949e;font-size:13px;cursor:pointer;transition:all .2s}
 .topbar-actions button:hover{color:#e6edf3;border-color:#8b949e}
 .tab-nav{display:flex;gap:0;background:#161b22;border-bottom:1px solid #30363d;padding:0 32px}
 .tab-btn{padding:12px 20px;background:none;border:none;border-bottom:2px solid transparent;color:#8b949e;font-size:14px;font-weight:500;cursor:pointer;transition:all .2s}
 .tab-btn:hover{color:#e6edf3}
-.tab-btn.active{color:#e6edf3;border-bottom-color:#e50914}
+.tab-btn.active{color:#e6edf3;border-bottom-color:#a855f7}
 .main{padding:32px;max-width:1200px;margin:0 auto}
 
 /* Tabs */
@@ -814,15 +814,15 @@ a{color:#58a6ff;text-decoration:none}
 .toggle{display:flex;align-items:center;gap:12px;cursor:pointer}
 .toggle input{display:none}
 .toggle-track{width:44px;height:24px;background:#30363d;border-radius:12px;position:relative;transition:background .2s}
-.toggle input:checked+.toggle-track{background:#e50914}
+.toggle input:checked+.toggle-track{background:#a855f7}
 .toggle-track::after{content:'';position:absolute;width:20px;height:20px;background:#e6edf3;border-radius:50%;top:2px;left:2px;transition:transform .2s}
 .toggle input:checked+.toggle-track::after{transform:translateX(20px)}
 .toggle-label{font-size:14px;color:#e6edf3}
 
 /* Buttons */
 .btn{padding:10px 20px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;gap:8px}
-.btn-primary{background:#e50914;color:#fff}
-.btn-primary:hover{background:#c40812}
+.btn-primary{background:#a855f7;color:#fff}
+.btn-primary:hover{background:#7c3aed}
 .btn-primary:disabled{background:#30363d;color:#8b949e;cursor:not-allowed}
 .btn-secondary{background:#21262d;color:#e6edf3;border:1px solid #30363d}
 .btn-secondary:hover{background:#30363d}
@@ -844,7 +844,7 @@ tr:last-child td{border-bottom:none}
 
 /* Build progress */
 .progress-bar{width:100%;height:8px;background:#21262d;border-radius:4px;overflow:hidden;margin:12px 0}
-.progress-fill{height:100%;background:linear-gradient(90deg,#e50914,#ff6b6b);border-radius:4px;transition:width .5s ease}
+.progress-fill{height:100%;background:linear-gradient(90deg,#a855f7,#c084fc);border-radius:4px;transition:width .5s ease}
 
 /* Log viewer */
 .log-viewer{background:#010409;border:1px solid #30363d;border-radius:8px;padding:12px;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:12px;line-height:1.6;color:#8b949e;max-height:400px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
@@ -864,7 +864,7 @@ tr:last-child td{border-bottom:none}
 .alert-info{background:#1f6feb22;border:1px solid #1f6feb55;color:#58a6ff}
 
 /* Spinner */
-.spinner{display:inline-block;width:18px;height:18px;border:2px solid #30363d;border-top-color:#e50914;border-radius:50%;animation:spin .8s linear infinite}
+.spinner{display:inline-block;width:18px;height:18px;border:2px solid #30363d;border-top-color:#a855f7;border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* Toast */
@@ -1073,9 +1073,9 @@ tr:last-child td{border-bottom:none}
 
       <div class="card-row">
         <div class="card">
-          <h3>Initial Build</h3>
+          <h3>Database Build</h3>
           <p style="color:#8b949e;font-size:13px;margin-bottom:20px">
-            One-time job to tag movies and TV shows. Requires Gemini paid tier for large batches.
+            Tag movies and TV shows using the Gemini API. Requires paid tier for large batches.
           </p>
           <div class="card-row">
             <div class="form-group">
@@ -1087,7 +1087,7 @@ tr:last-child td{border-bottom:none}
               <input type="number" id="build-shows" value="50000" min="100" step="100">
             </div>
           </div>
-          <button class="btn btn-primary" id="btn-start-build" onclick="startBuild()">Start Initial Build</button>
+          <button class="btn btn-primary" id="btn-start-build" onclick="startBuild()">Start Database Build</button>
         </div>
 
         <div class="card">
@@ -1353,7 +1353,7 @@ async function startBuild() {
   const movies = parseInt(document.getElementById('build-movies').value) || 100000;
   const shows = parseInt(document.getElementById('build-shows').value) || 50000;
 
-  if (!confirm('Start initial build?\\n\\nMovies: ' + fmtNum(movies) + '\\nTV Shows: ' + fmtNum(shows) +
+  if (!confirm('Start database build?\\n\\nMovies: ' + fmtNum(movies) + '\\nTV Shows: ' + fmtNum(shows) +
     '\\n\\nThis may take several hours and will use Gemini API calls.')) return;
 
   try {

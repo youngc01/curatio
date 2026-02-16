@@ -294,7 +294,7 @@ class TaggingJob(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     job_type = Column(String(50), nullable=False)
-    # Types: 'initial_build', 'weekly_update', 'manual_retag'
+    # Types: 'database_build', 'weekly_update', 'manual_retag'
 
     started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     completed_at = Column(DateTime, nullable=True)

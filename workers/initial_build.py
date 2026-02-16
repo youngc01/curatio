@@ -1,8 +1,8 @@
 """
-Initial database build worker.
+Database build worker.
 
-This is the ONE-TIME job that costs ~$5 and tags all movies and TV shows.
-Run this once, then use free tier for weekly updates forever.
+Tags all movies and TV shows using the Gemini API.
+Run this once, then use the free tier for weekly updates.
 
 Usage:
     python workers/initial_build.py --movies 100000 --shows 50000
@@ -335,10 +335,10 @@ async def main(movies_limit: int, shows_limit: int):
     start_time = datetime.utcnow()
 
     logger.info("=" * 80)
-    logger.info("INITIAL DATABASE BUILD - One-Time $5 Job")
+    logger.info("DATABASE BUILD")
     logger.info("=" * 80)
     logger.info(f"Target: {movies_limit} movies + {shows_limit} TV shows")
-    logger.info("Estimated cost: ~$5")
+    logger.info("Uses Gemini API calls")
     logger.info("Estimated time: ~3 hours")
     logger.info("=" * 80)
 
@@ -348,7 +348,7 @@ async def main(movies_limit: int, shows_limit: int):
     with get_db() as db:
         # Create tagging job record
         job = TaggingJob(
-            job_type="initial_build", started_at=start_time, status="running"
+            job_type="database_build", started_at=start_time, status="running"
         )
         db.add(job)
         db.commit()
@@ -399,7 +399,6 @@ async def main(movies_limit: int, shows_limit: int):
             logger.info(f"Total items: {movies_processed + shows_processed}")
             logger.info(f"Failed: {movies_failed + shows_failed}")
             logger.info(f"Duration: {duration:.1f} hours")
-            logger.info("Estimated cost: ~$5")
             logger.info("=" * 80)
             logger.info("Next steps:")
             logger.info("1. Set GEMINI_PAID_TIER=false in .env")
