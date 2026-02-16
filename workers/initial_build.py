@@ -152,31 +152,31 @@ async def store_metadata(db: Session, items: list, media_type: str):
     """Store TMDB metadata in database."""
     logger.info(f"Storing metadata for {len(items)} {media_type} items...")
 
+    # Deduplicate items by tmdb_id (TMDB can return same item on multiple pages)
+    seen = set()
+    unique_items = []
     for item in items:
-        metadata_dict = tmdb_client.extract_metadata(item, media_type)
+        tmdb_id = item.get("id")
+        if tmdb_id not in seen:
+            seen.add(tmdb_id)
+            unique_items.append(item)
 
-        # Check if exists
-        existing = (
-            db.query(MediaMetadata)
-            .filter(
-                MediaMetadata.tmdb_id == metadata_dict["tmdb_id"],
-                MediaMetadata.media_type == media_type,
-            )
-            .first()
-        )
+    if len(unique_items) < len(items):
+        logger.info(f"Deduplicated {len(items)} -> {len(unique_items)} items")
 
-        if existing:
-            # Update
-            for key, value in metadata_dict.items():
-                if key not in ["tmdb_id", "media_type"]:
-                    setattr(existing, key, value)
-        else:
-            # Create
-            metadata = MediaMetadata(**metadata_dict)
-            db.add(metadata)
+    # Process in batches with upsert (merge) to handle duplicates gracefully
+    batch_size = 500
+    for i in range(0, len(unique_items), batch_size):
+        batch = unique_items[i : i + batch_size]
+        for item in batch:
+            metadata_dict = tmdb_client.extract_metadata(item, media_type)
+            # merge() does upsert: inserts if new, updates if exists
+            db.merge(MediaMetadata(**metadata_dict))
+        db.commit()
+        stored = min(i + batch_size, len(unique_items))
+        logger.info(f"Stored {stored}/{len(unique_items)} {media_type} metadata")
 
-    db.commit()
-    logger.info(f"Stored metadata for {len(items)} items")
+    logger.info(f"Stored metadata for {len(unique_items)} items")
 
 
 async def tag_items_batch(
@@ -354,8 +354,9 @@ async def main(movies_limit: int, shows_limit: int):
 
         except Exception as e:
             logger.error(f"Build failed: {e}")
+            db.rollback()
             job.status = "failed"
-            job.error_message = str(e)
+            job.error_message = str(e)[:2000]
             db.commit()
             raise
 
