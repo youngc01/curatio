@@ -59,8 +59,8 @@ User -> Stremio -> Curatio (FastAPI) -> PostgreSQL (tag database) -> TMDB metada
 ### 1. Clone and Configure
 
 ```bash
-git clone https://github.com/youngc01/stremio-ai-addon.git
-cd stremio-ai-addon
+git clone https://github.com/youngc01/Curatio.git
+cd Curatio
 cp .env.example .env
 ```
 
