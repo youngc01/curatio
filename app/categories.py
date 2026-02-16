@@ -424,9 +424,7 @@ def seed_categories(db: Session) -> int:
     db.commit()
 
     if created or updated:
-        logger.info(
-            f"Categories: {created} created, {updated} updated"
-        )
+        logger.info(f"Categories: {created} created, {updated} updated")
     else:
         logger.info("All 40 universal categories already up to date")
 

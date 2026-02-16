@@ -533,7 +533,9 @@ async def pause_build(request: Request, _=Depends(verify_admin)):
     if _active_build_task is None or _active_build_task.done():
         # Check if there's a DB-level running job (orphaned after restart)
         with get_db() as db:
-            running = db.query(TaggingJob).filter(TaggingJob.status == "running").first()
+            running = (
+                db.query(TaggingJob).filter(TaggingJob.status == "running").first()
+            )
             if not running:
                 raise HTTPException(404, "No build is currently running")
 
@@ -654,10 +656,14 @@ async def auto_resume_build():
         if not orphaned.job_metadata:
             # Can't resume without params — mark as interrupted
             orphaned.status = "cancelled"
-            orphaned.error_message = "Interrupted by container restart (no params to resume)"
+            orphaned.error_message = (
+                "Interrupted by container restart (no params to resume)"
+            )
             orphaned.completed_at = datetime.utcnow()
             db.commit()
-            logger.warning("Found orphaned build job but no metadata — marked cancelled")
+            logger.warning(
+                "Found orphaned build job but no metadata — marked cancelled"
+            )
             return
 
         movies = orphaned.job_metadata.get("movies_target", 100000)
@@ -858,9 +864,7 @@ async def debug_catalogs(request: Request, _=Depends(verify_admin)):
                 try:
                     content_count = (
                         db.query(func.count(UniversalCatalogContent.tmdb_id))
-                        .filter(
-                            UniversalCatalogContent.category_id == cat_info["id"]
-                        )
+                        .filter(UniversalCatalogContent.category_id == cat_info["id"])
                         .scalar()
                         or 0
                     )

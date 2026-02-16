@@ -19,14 +19,18 @@ import secrets
 from loguru import logger
 
 from app.config import settings, validate_api_keys
-from app.database import get_db_dependency, get_db, init_database, check_database_connection
+from app.database import (
+    get_db_dependency,
+    get_db,
+    init_database,
+    check_database_connection,
+)
 from app.models import User, UniversalCategory, UserCatalog, OAuthState
 from app.catalog_generator import CatalogGenerator
 from app.trakt_client import trakt_client
 from app.crypto import encrypt_token, decrypt_token
 from app.landing import landing_page_html, auth_success_html, auth_error_html
 from app.admin import router as admin_router, load_settings_from_db
-
 
 # ---- Manifest cache (avoids DB query on every manifest request) ----
 _manifest_cache: dict[str, tuple[float, dict]] = {}
@@ -512,7 +516,9 @@ async def trakt_callback(
     oauth_state = db.query(OAuthState).filter(OAuthState.state == state).first()
     if not oauth_state:
         return HTMLResponse(
-            content=auth_error_html("Invalid or expired OAuth state. Please try again."),
+            content=auth_error_html(
+                "Invalid or expired OAuth state. Please try again."
+            ),
             status_code=400,
         )
 

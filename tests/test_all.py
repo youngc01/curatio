@@ -430,7 +430,10 @@ def test_catalog_query_performance(db):
     # Create 1000 test movies
     for i in range(1000):
         movie = MediaMetadata(
-            tmdb_id=i, media_type="movie", title=f"Movie {i}", popularity=float(i),
+            tmdb_id=i,
+            media_type="movie",
+            title=f"Movie {i}",
+            popularity=float(i),
             vote_count=100,
         )
         db.add(movie)
@@ -668,7 +671,9 @@ def test_universal_categories_have_valid_formulas(db):
         mandatory = formula.get("mandatory", [])
         required = formula["required"]
         total_tags = len(mandatory) + len(required)
-        assert total_tags >= 2, f"{cat.id} needs >= 2 total constraint tags (has {total_tags})"
+        assert (
+            total_tags >= 2
+        ), f"{cat.id} needs >= 2 total constraint tags (has {total_tags})"
         assert formula["min_required"] >= 1, f"{cat.id} min_required should be >= 1"
 
 
