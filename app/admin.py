@@ -386,6 +386,141 @@ async def get_build_status(request: Request, _=Depends(verify_admin)):
     return {"running": task_running}
 
 
+@router.get("/api/debug")
+async def debug_catalogs(request: Request, _=Depends(verify_admin)):
+    """Full diagnostic of the catalog pipeline to identify issues."""
+    from app.catalog_generator import CatalogGenerator
+
+    with get_db() as db:
+        # Layer 1: Tags
+        tag_count = db.query(func.count(Tag.id)).scalar() or 0
+
+        # Layer 2: MovieTags (tagged items)
+        movies_tagged = (
+            db.query(func.count(func.distinct(MovieTag.tmdb_id)))
+            .filter(MovieTag.media_type == "movie")
+            .scalar()
+            or 0
+        )
+        shows_tagged = (
+            db.query(func.count(func.distinct(MovieTag.tmdb_id)))
+            .filter(MovieTag.media_type == "tv")
+            .scalar()
+            or 0
+        )
+
+        # Layer 3: Metadata
+        metadata_count = db.query(func.count(MediaMetadata.tmdb_id)).scalar() or 0
+
+        # Layer 4: Universal categories
+        categories = (
+            db.query(UniversalCategory)
+            .filter(UniversalCategory.is_active.is_(True))
+            .order_by(UniversalCategory.sort_order)
+            .all()
+        )
+
+        # Layer 5: Pre-computed catalog content
+        total_catalog_items = (
+            db.query(func.count(UniversalCatalogContent.tmdb_id)).scalar() or 0
+        )
+
+        # Per-category breakdown
+        category_details = []
+        generator = CatalogGenerator(db)
+        for cat in categories:
+            content_count = (
+                db.query(func.count(UniversalCatalogContent.tmdb_id))
+                .filter(UniversalCatalogContent.category_id == cat.id)
+                .scalar()
+                or 0
+            )
+            # Check how many items would match the formula (live query)
+            potential_matches = len(generator.generate_universal_catalog(cat, limit=5))
+            category_details.append(
+                {
+                    "id": cat.id,
+                    "name": cat.name,
+                    "media_type": cat.media_type,
+                    "tag_formula": cat.tag_formula,
+                    "pre_computed_items": content_count,
+                    "potential_matches_sample": potential_matches,
+                }
+            )
+
+        # Layer 6: Last tagging job status
+        last_job = (
+            db.query(TaggingJob)
+            .order_by(TaggingJob.started_at.desc())
+            .first()
+        )
+
+        # Build diagnosis
+        issues = []
+        if tag_count == 0:
+            issues.append("No tags exist. Run initial build to create tags.")
+        if movies_tagged == 0 and shows_tagged == 0:
+            issues.append("No items have been tagged yet.")
+        if metadata_count == 0:
+            issues.append(
+                "No metadata cached. Items won't show posters/titles in Stremio."
+            )
+        if len(categories) == 0:
+            issues.append("No active universal categories found.")
+        if total_catalog_items == 0 and (movies_tagged > 0 or shows_tagged > 0):
+            issues.append(
+                "CRITICAL: Items are tagged but catalog content table is empty. "
+                "The catalog generation step likely didn't run. "
+                "Use 'Regenerate Catalogs' to fix this."
+            )
+
+    return {
+        "pipeline": {
+            "tags": tag_count,
+            "movies_tagged": movies_tagged,
+            "shows_tagged": shows_tagged,
+            "metadata_cached": metadata_count,
+            "active_categories": len(categories),
+            "pre_computed_catalog_items": total_catalog_items,
+        },
+        "categories": category_details,
+        "last_job": {
+            "type": last_job.job_type if last_job else None,
+            "status": last_job.status if last_job else None,
+            "error": (last_job.error_message or "")[:500] if last_job else None,
+        },
+        "issues": issues,
+        "healthy": len(issues) == 0,
+    }
+
+
+@router.post("/api/catalogs/regenerate")
+async def regenerate_catalogs(request: Request, _=Depends(verify_admin)):
+    """Regenerate all universal catalogs from existing tags (no re-tagging needed)."""
+    from app.catalog_generator import CatalogGenerator
+
+    with get_db() as db:
+        # Sanity check: are there tagged items?
+        tagged_count = (
+            db.query(func.count(func.distinct(MovieTag.tmdb_id))).scalar() or 0
+        )
+        if tagged_count == 0:
+            raise HTTPException(
+                400,
+                "No tagged items found. Run a build first to tag movies/shows.",
+            )
+
+        generator = CatalogGenerator(db)
+        generator.regenerate_all_universal_catalogs()
+
+        new_total = (
+            db.query(func.count(UniversalCatalogContent.tmdb_id)).scalar() or 0
+        )
+
+    logger.info(f"Catalog regeneration complete: {new_total} total items")
+    return {"status": "ok", "total_catalog_items": new_total}
+
+
 # ---- HTML Page ----
 
 
@@ -678,6 +813,15 @@ tr:last-child td{border-bottom:none}
         <h3>Build Status</h3>
         <div id="build-status-content">
           <p style="color:#8b949e">No build currently running.</p>
+        </div>
+      </div>
+
+      <div class="card" id="debug-card">
+        <h3>Catalog Pipeline Diagnostic</h3>
+        <div id="debug-content"><p style="color:#8b949e">Click to run diagnostic...</p></div>
+        <div style="margin-top:16px;display:flex;gap:12px">
+          <button class="btn btn-secondary" onclick="runDebug()">Run Diagnostic</button>
+          <button class="btn btn-primary" id="btn-regenerate" onclick="regenerateCatalogs()">Regenerate Catalogs</button>
         </div>
       </div>
 
@@ -1005,6 +1149,61 @@ async function loadBuildStatus() {
       loadStats(); // refresh stats after build completes
     }
   } catch(e) { if (e.message !== 'auth') console.error(e); }
+}
+
+// ---- Diagnostic & Regenerate ----
+async function runDebug() {
+  const el = document.getElementById('debug-content');
+  el.innerHTML = '<div class="alert alert-info"><span class="spinner"></span> Running diagnostic...</div>';
+  try {
+    const d = await api('GET', '/admin/api/debug');
+    const p = d.pipeline;
+    let html = '<div class="build-info" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">' +
+      '<div class="build-stat"><div class="val">' + fmtNum(p.tags) + '</div><div class="lbl">Tags</div></div>' +
+      '<div class="build-stat"><div class="val">' + fmtNum(p.movies_tagged) + '</div><div class="lbl">Movies Tagged</div></div>' +
+      '<div class="build-stat"><div class="val">' + fmtNum(p.shows_tagged) + '</div><div class="lbl">Shows Tagged</div></div>' +
+      '<div class="build-stat"><div class="val">' + fmtNum(p.metadata_cached) + '</div><div class="lbl">Metadata Cached</div></div>' +
+      '<div class="build-stat"><div class="val">' + fmtNum(p.active_categories) + '</div><div class="lbl">Active Categories</div></div>' +
+      '<div class="build-stat"><div class="val">' + fmtNum(p.pre_computed_catalog_items) + '</div><div class="lbl">Catalog Items</div></div>' +
+      '</div>';
+
+    if (d.issues.length > 0) {
+      html += d.issues.map(function(i) { return '<div class="alert alert-error">' + i + '</div>'; }).join('');
+    } else {
+      html += '<div class="alert alert-success">All pipeline stages healthy.</div>';
+    }
+
+    if (d.categories.length > 0) {
+      html += '<details style="margin-top:12px"><summary style="cursor:pointer;color:#58a6ff;font-size:14px">Category Breakdown (' + d.categories.length + ' categories)</summary>' +
+        '<table style="margin-top:8px"><thead><tr><th>Category</th><th>Type</th><th>Pre-computed</th><th>Sample Match</th></tr></thead><tbody>';
+      d.categories.forEach(function(c) {
+        html += '<tr><td>' + c.name + '</td><td>' + c.media_type + '</td><td>' + fmtNum(c.pre_computed_items) + '</td><td>' + c.potential_matches_sample + '</td></tr>';
+      });
+      html += '</tbody></table></details>';
+    }
+
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div class="alert alert-error">Diagnostic failed: ' + e.message + '</div>';
+  }
+}
+
+async function regenerateCatalogs() {
+  if (!confirm('Regenerate all universal catalogs from existing tags?\\n\\nThis rebuilds the pre-computed catalog content using your tagged items. No re-tagging needed.')) return;
+  const btn = document.getElementById('btn-regenerate');
+  btn.disabled = true;
+  btn.textContent = 'Regenerating...';
+  try {
+    const res = await api('POST', '/admin/api/catalogs/regenerate');
+    toast('Catalogs regenerated: ' + fmtNum(res.total_catalog_items) + ' items', 'success');
+    loadStats();
+    runDebug();
+  } catch (e) {
+    toast('Failed: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Regenerate Catalogs';
+  }
 }
 
 // ---- Init ----
