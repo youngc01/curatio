@@ -968,8 +968,8 @@ tr:last-child td{border-bottom:none}
         <div class="card-row">
           <div class="form-group">
             <label>Catalog Size (total items stored per catalog)</label>
-            <input type="number" id="set-CATALOG_SIZE" min="10" max="500" placeholder="200">
-            <div class="hint">Total items generated into each catalog. Default: 200</div>
+            <input type="number" id="set-CATALOG_SIZE" min="10" max="1000" placeholder="200">
+            <div class="hint">Total items generated into each catalog. Default: 200. Requires &ldquo;Regenerate Catalogs&rdquo; on the Build tab to take effect.</div>
           </div>
           <div class="form-group">
             <label>Page Size (items per Stremio page)</label>
