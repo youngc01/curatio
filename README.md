@@ -26,7 +26,7 @@
 - **40 Universal Catalogs** -- Netflix-style semantic categories (Dark Crime Dramas, Cyberpunk Futures, Feel-Good Comedies, etc.)
 - **10 Personalized Catalogs** -- AI recommendations based on your Trakt watch history
 - **Gemini AI Tagging** -- Every title semantically tagged across mood, genre, era, and style
-- **One-Time $5 Build** -- Tag 150,000 titles once, then serve catalogs at $0/month
+- **One-Time Build** -- Tag 150,000 titles once, then serve catalogs at $0/month
 - **Admin Dashboard** -- Web UI to manage builds, monitor status, and configure settings
 - **Build Pause/Resume** -- Pause builds at any time and resume later, even after a container restart
 - **Daily Auto-Updates** -- Built-in scheduler fetches and tags new releases automatically
