@@ -187,11 +187,44 @@ async def tag_items_batch(
         f"Tagging {len(items)} {media_type} items in batches of {batch_size}..."
     )
 
+    # Deduplicate items by TMDB ID to avoid processing duplicates
+    seen_ids = set()
+    unique_items = []
+    for item in items:
+        tmdb_id = item.get("id")
+        if tmdb_id not in seen_ids:
+            seen_ids.add(tmdb_id)
+            unique_items.append(item)
+
+    if len(unique_items) < len(items):
+        logger.info(f"Deduplicated {len(items)} -> {len(unique_items)} items for tagging")
+
+    # Skip items that are already tagged
+    already_tagged = {
+        row[0]
+        for row in db.query(MovieTag.tmdb_id)
+        .filter(MovieTag.media_type == media_type)
+        .distinct()
+        .all()
+    }
+    items_to_tag = [
+        item for item in unique_items if item.get("id") not in already_tagged
+    ]
+
+    if len(items_to_tag) < len(unique_items):
+        logger.info(
+            f"Skipping {len(unique_items) - len(items_to_tag)} already-tagged items, "
+            f"{len(items_to_tag)} remaining"
+        )
+
+    # Load tag name -> ID map once
+    tag_map = {tag.name: tag.id for tag in db.query(Tag).all()}
+
     total_processed = 0
     total_failed = 0
 
-    for i in range(0, len(items), batch_size):
-        batch = items[i : i + batch_size]
+    for i in range(0, len(items_to_tag), batch_size):
+        batch = items_to_tag[i : i + batch_size]
 
         try:
             # Prepare items for Gemini
@@ -212,44 +245,31 @@ async def tag_items_batch(
             # Tag with Gemini
             tagged_items = await gemini_engine.tag_items(gemini_items)
 
-            # Get tag IDs
-            tag_map = {tag.name: tag.id for tag in db.query(Tag).all()}
-
-            # Store tags
+            # Store tags using merge() for safe upsert (handles duplicates gracefully)
             for tagged_item in tagged_items:
                 tmdb_id = tagged_item["tmdb_id"]
                 tags = tagged_item.get("tags", {})
 
                 for tag_name, confidence in tags.items():
                     if tag_name in tag_map:
-                        # Check if exists
-                        existing = (
-                            db.query(MovieTag)
-                            .filter(
-                                MovieTag.tmdb_id == tmdb_id,
-                                MovieTag.tag_id == tag_map[tag_name],
-                            )
-                            .first()
+                        movie_tag = MovieTag(
+                            tmdb_id=tmdb_id,
+                            tag_id=tag_map[tag_name],
+                            confidence=confidence,
+                            media_type=media_type,
                         )
-
-                        if existing:
-                            existing.confidence = confidence
-                        else:
-                            movie_tag = MovieTag(
-                                tmdb_id=tmdb_id,
-                                tag_id=tag_map[tag_name],
-                                confidence=confidence,
-                                media_type=media_type,
-                            )
-                            db.add(movie_tag)
+                        db.merge(movie_tag)
 
             db.commit()
 
             total_processed += len(batch)
-            logger.info(f"Progress: {total_processed}/{len(items)} items tagged")
+            logger.info(
+                f"Progress: {total_processed}/{len(items_to_tag)} items tagged"
+            )
 
         except Exception as e:
             logger.error(f"Failed to tag batch: {e}")
+            db.rollback()
             total_failed += len(batch)
             continue
 
