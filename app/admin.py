@@ -795,6 +795,7 @@ async def ws_build_logs(ws):
 
 async def _broadcast_log(line: str):
     """Send a log line to all connected WebSocket clients."""
+    global _ws_clients
     dead = set()
     for ws in _ws_clients:
         try:
