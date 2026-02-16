@@ -107,7 +107,6 @@ PREDEFINED_TAGS = {
         "Period Costume",
         "Neon Visuals",
         "Satirical",
-        "Gritty",
     ],
     "character": [
         "Strong Female Lead",
@@ -122,17 +121,17 @@ PREDEFINED_TAGS = {
 
 
 async def create_tags(db: Session):
-    """Create predefined tags in database."""
+    """Create predefined tags in database (idempotent)."""
     logger.info("Creating predefined tags...")
 
     created_count = 0
     for category, tag_names in PREDEFINED_TAGS.items():
         for tag_name in tag_names:
-            # Check if tag exists
             existing = db.query(Tag).filter(Tag.name == tag_name).first()
             if not existing:
                 tag = Tag(name=tag_name, category=category)
                 db.add(tag)
+                db.flush()  # Flush each tag so subsequent checks see it
                 created_count += 1
 
     db.commit()

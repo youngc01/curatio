@@ -30,5 +30,5 @@ EXPOSE ${PORT}
 HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
     CMD python -c "import os,requests; requests.get(f'http://localhost:{os.environ.get(\"PORT\",8000)}/health')"
 
-# Run FastAPI (shell form so $PORT is expanded)
-CMD uvicorn app.main:app --host 0.0.0.0 --port $PORT
+# Run FastAPI
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port $PORT"]
