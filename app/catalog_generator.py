@@ -199,12 +199,73 @@ class CatalogGenerator:
 
     def _generate_top_picks(self, user_id: int, limit: int) -> List[int]:
         """
-        Generate 'Top Picks for You' based on user's viewing history.
+        Generate 'Top Picks for You' based on user's viewing history tags.
 
-        This finds items with tags similar to what the user has watched.
+        Finds the user's most-watched tag profile, then recommends unwatched
+        items that match those tags most strongly.
         """
-        # Get user's watched items
-        # For now, simplified: return popular items with high ratings
+        from app.models import User
+
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user or not user.last_sync:
+            # No watch history yet -- fall back to popular + well-rated
+            return self._fallback_top_picks(limit)
+
+        # Get user's watched TMDB IDs from their personal catalogs
+        watched_ids = {
+            row.tmdb_id
+            for row in self.db.query(UserCatalogContent.tmdb_id)
+            .join(UserCatalog)
+            .filter(UserCatalog.user_id == user_id)
+            .all()
+        }
+
+        if not watched_ids:
+            return self._fallback_top_picks(limit)
+
+        # Find the user's top tags (most frequent + highest confidence)
+        user_tags = (
+            self.db.query(
+                MovieTag.tag_id,
+                func.avg(MovieTag.confidence).label("avg_conf"),
+                func.count().label("cnt"),
+            )
+            .filter(MovieTag.tmdb_id.in_(watched_ids))
+            .group_by(MovieTag.tag_id)
+            .order_by(func.count().desc(), func.avg(MovieTag.confidence).desc())
+            .limit(15)
+            .all()
+        )
+
+        if not user_tags:
+            return self._fallback_top_picks(limit)
+
+        top_tag_ids = [t.tag_id for t in user_tags]
+
+        # Find items matching user's taste profile, excluding watched
+        results = (
+            self.db.query(
+                MovieTag.tmdb_id,
+                func.count(MovieTag.tag_id).label("matching_tags"),
+                func.avg(MovieTag.confidence).label("avg_confidence"),
+            )
+            .filter(
+                MovieTag.tag_id.in_(top_tag_ids),
+                ~MovieTag.tmdb_id.in_(watched_ids),
+            )
+            .group_by(MovieTag.tmdb_id)
+            .order_by(
+                func.count(MovieTag.tag_id).desc(),
+                func.avg(MovieTag.confidence).desc(),
+            )
+            .limit(limit)
+            .all()
+        )
+
+        return [r.tmdb_id for r in results]
+
+    def _fallback_top_picks(self, limit: int) -> List[int]:
+        """Fallback top picks when no watch history is available."""
         results = (
             self.db.query(MediaMetadata.tmdb_id)
             .filter(MediaMetadata.vote_average >= 7.0, MediaMetadata.vote_count >= 1000)
@@ -212,7 +273,6 @@ class CatalogGenerator:
             .limit(limit)
             .all()
         )
-
         return [r.tmdb_id for r in results]
 
     def _generate_because_you_watched(

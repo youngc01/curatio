@@ -20,6 +20,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import (
     AdminSetting,
+    AdminSession,
     Tag,
     MovieTag,
     MediaMetadata,
@@ -31,8 +32,7 @@ from app.models import (
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-# In-memory session store and active build task
-_admin_sessions: dict[str, datetime] = {}
+# Active build task (in-memory, intentionally not persisted)
 _active_build_task: Optional[asyncio.Task] = None
 SESSION_DURATION = timedelta(hours=24)
 
@@ -50,7 +50,17 @@ def _start_log_capture():
     _build_logs.clear()
 
     def _sink(message):
-        _build_logs.append(str(message).rstrip())
+        line = str(message).rstrip()
+        _build_logs.append(line)
+        # Broadcast to WebSocket clients (fire-and-forget)
+        if _ws_clients:
+            import asyncio as _aio
+
+            try:
+                loop = _aio.get_running_loop()
+                loop.create_task(_broadcast_log(line))
+            except RuntimeError:
+                pass  # no running loop (e.g. during testing)
 
     _build_log_sink_id = logger.add(
         _sink,
@@ -118,13 +128,17 @@ def _stop_log_capture():
 
 
 def verify_admin(request: Request):
-    """Verify admin authentication via cookie."""
+    """Verify admin authentication via cookie (DB-backed sessions)."""
     token = request.cookies.get("admin_token")
-    if not token or token not in _admin_sessions:
+    if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    if datetime.utcnow() > _admin_sessions[token]:
-        del _admin_sessions[token]
-        raise HTTPException(status_code=401, detail="Session expired")
+    with get_db() as db:
+        session = db.query(AdminSession).filter(AdminSession.token == token).first()
+        if not session:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        if datetime.utcnow() > session.expires_at:
+            db.query(AdminSession).filter(AdminSession.token == token).delete()
+            raise HTTPException(status_code=401, detail="Session expired")
     return True
 
 
@@ -186,7 +200,14 @@ async def admin_login(request: Request):
         raise HTTPException(status_code=401, detail="Invalid password")
 
     token = secrets.token_hex(32)
-    _admin_sessions[token] = datetime.utcnow() + SESSION_DURATION
+    expires_at = datetime.utcnow() + SESSION_DURATION
+
+    with get_db() as db:
+        # Clean up expired sessions
+        db.query(AdminSession).filter(
+            AdminSession.expires_at < datetime.utcnow()
+        ).delete()
+        db.add(AdminSession(token=token, expires_at=expires_at))
 
     response = JSONResponse({"status": "ok"})
     response.set_cookie(
@@ -203,8 +224,9 @@ async def admin_login(request: Request):
 async def admin_logout(request: Request):
     """Clear admin session."""
     token = request.cookies.get("admin_token")
-    if token in _admin_sessions:
-        del _admin_sessions[token]
+    if token:
+        with get_db() as db:
+            db.query(AdminSession).filter(AdminSession.token == token).delete()
     response = JSONResponse({"status": "ok"})
     response.delete_cookie("admin_token")
     return response
@@ -565,6 +587,41 @@ async def get_build_logs(
         logs = logs[after:]
 
     return {"lines": logs, "total": total}
+
+
+# ---- WebSocket for live build logs ----
+_ws_clients: set = set()
+
+
+@router.websocket("/ws/build-logs")
+async def ws_build_logs(ws):
+    """WebSocket endpoint for real-time build log streaming."""
+    from starlette.websockets import WebSocketDisconnect
+
+    await ws.accept()
+    _ws_clients.add(ws)
+    # Send existing logs as initial payload
+    for line in list(_build_logs):
+        await ws.send_text(line)
+    try:
+        while True:
+            # Keep connection alive; client doesn't send data
+            await ws.receive_text()
+    except (WebSocketDisconnect, Exception):
+        pass
+    finally:
+        _ws_clients.discard(ws)
+
+
+async def _broadcast_log(line: str):
+    """Send a log line to all connected WebSocket clients."""
+    dead = set()
+    for ws in _ws_clients:
+        try:
+            await ws.send_text(line)
+        except Exception:
+            dead.add(ws)
+    _ws_clients -= dead
 
 
 @router.get("/api/debug")
@@ -1398,19 +1455,47 @@ async function stopBuild() {
   }
 }
 
+let buildWs = null;
+
 function startBuildPolling() {
   logOffset = 0;
   document.getElementById('log-viewer').innerHTML = '';
   if (buildPollTimer) clearInterval(buildPollTimer);
   if (logPollTimer) clearInterval(logPollTimer);
   buildPollTimer = setInterval(loadBuildStatus, 5000);
-  logPollTimer = setInterval(pollLogs, 3000);
-  pollLogs(); // fetch immediately
+
+  // Try WebSocket first, fall back to polling
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  try {
+    buildWs = new WebSocket(proto + '//' + location.host + '/admin/ws/build-logs');
+    buildWs.onmessage = function(e) {
+      const viewer = document.getElementById('log-viewer');
+      const wasScrolled = viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight < 40;
+      const safe = e.data.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      viewer.innerHTML += colorLogLine(safe) + '\\n';
+      logOffset++;
+      document.getElementById('log-count').textContent = '(' + logOffset + ' lines)';
+      if (wasScrolled) viewer.scrollTop = viewer.scrollHeight;
+    };
+    buildWs.onerror = function() { _fallbackToPoll(); };
+    buildWs.onclose = function() { buildWs = null; };
+  } catch(e) {
+    _fallbackToPoll();
+  }
+}
+
+function _fallbackToPoll() {
+  if (buildWs) { try { buildWs.close(); } catch(e){} buildWs = null; }
+  if (!logPollTimer) {
+    logPollTimer = setInterval(pollLogs, 3000);
+    pollLogs();
+  }
 }
 
 function stopBuildPolling() {
   if (buildPollTimer) { clearInterval(buildPollTimer); buildPollTimer = null; }
   if (logPollTimer) { clearInterval(logPollTimer); logPollTimer = null; }
+  if (buildWs) { try { buildWs.close(); } catch(e){} buildWs = null; }
 }
 
 function colorLogLine(line) {

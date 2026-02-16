@@ -33,6 +33,8 @@ def filter_new_items(db: Session, items: list, media_type: str) -> list:
     """
     Filter out items that already exist in the database.
 
+    Uses batched SQL IN queries instead of loading all existing IDs into memory.
+
     Args:
         db: Database session
         items: List of TMDB items
@@ -41,12 +43,24 @@ def filter_new_items(db: Session, items: list, media_type: str) -> list:
     Returns:
         List of items not yet in the database
     """
-    existing_ids = {
-        row.tmdb_id
-        for row in db.query(MediaMetadata.tmdb_id).filter(
-            MediaMetadata.media_type == media_type
+    if not items:
+        return []
+
+    # Check existence in batches via SQL to avoid loading entire table
+    all_ids = [item["id"] for item in items]
+    existing_ids: set = set()
+    batch_size = 1000
+    for i in range(0, len(all_ids), batch_size):
+        batch = all_ids[i : i + batch_size]
+        rows = (
+            db.query(MediaMetadata.tmdb_id)
+            .filter(
+                MediaMetadata.media_type == media_type,
+                MediaMetadata.tmdb_id.in_(batch),
+            )
+            .all()
         )
-    }
+        existing_ids.update(row.tmdb_id for row in rows)
 
     new_items = [item for item in items if item["id"] not in existing_ids]
     logger.info(

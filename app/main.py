@@ -18,12 +18,37 @@ import secrets
 from loguru import logger
 
 from app.config import settings, validate_api_keys
-from app.database import get_db_dependency, init_database, check_database_connection
-from app.models import User, UniversalCategory, UserCatalog
+from app.database import get_db_dependency, get_db, init_database, check_database_connection
+from app.models import User, UniversalCategory, UserCatalog, OAuthState
 from app.catalog_generator import CatalogGenerator
 from app.trakt_client import trakt_client
+from app.crypto import encrypt_token, decrypt_token
 from app.landing import landing_page_html, auth_success_html, auth_error_html
 from app.admin import router as admin_router, load_settings_from_db
+
+
+async def ensure_valid_trakt_token(user: User, db: Session) -> str:
+    """Return a valid (decrypted) Trakt access token, refreshing if expired."""
+    if datetime.utcnow() < user.trakt_token_expires_at - timedelta(minutes=5):
+        return decrypt_token(user.trakt_access_token)
+
+    # Token expired or about to -- refresh it
+    try:
+        refresh = decrypt_token(user.trakt_refresh_token)
+        token_data = await trakt_client.refresh_access_token(refresh)
+
+        user.trakt_access_token = encrypt_token(token_data["access_token"])
+        user.trakt_refresh_token = encrypt_token(token_data["refresh_token"])
+        user.trakt_token_expires_at = datetime.utcnow() + timedelta(
+            seconds=token_data["expires_in"]
+        )
+        db.commit()
+        logger.info(f"Refreshed Trakt token for user {user.trakt_username}")
+        return token_data["access_token"]
+    except Exception as e:
+        logger.error(f"Token refresh failed for user {user.trakt_username}: {e}")
+        # Fall back to existing token (may still work if clock skew)
+        return decrypt_token(user.trakt_access_token)
 
 
 def _stremio_type(media_type: str) -> str:
@@ -273,8 +298,16 @@ def _build_stremio_metas(items: list, catalog_type: str) -> list:
     return metas
 
 
-# ---- In-memory catalog cache ----
+# ---- LRU catalog cache with TTL ----
+_CACHE_MAX_ENTRIES = 256
 _catalog_cache: dict[str, tuple[float, list]] = {}
+
+
+def _cache_evict():
+    """Evict oldest entries when cache exceeds max size."""
+    while len(_catalog_cache) > _CACHE_MAX_ENTRIES:
+        oldest_key = min(_catalog_cache, key=lambda k: _catalog_cache[k][0])
+        del _catalog_cache[oldest_key]
 
 
 def _get_shuffle_seed(catalog_id: str) -> int:
@@ -300,7 +333,7 @@ def _shuffle_items(items: list, catalog_id: str) -> list:
 def _get_cached_catalog(
     catalog_id: str, db: Session, user_id: int | None = None
 ) -> list:
-    """Get catalog items with TTL-based caching."""
+    """Get catalog items with TTL + LRU caching."""
     cache_key = f"{catalog_id}:user={user_id}"
     now = time()
     ttl = settings.cache_ttl
@@ -308,17 +341,16 @@ def _get_cached_catalog(
     if cache_key in _catalog_cache:
         cached_at, items = _catalog_cache[cache_key]
         if now - cached_at < ttl:
+            # Touch: move to most-recent by re-inserting
+            _catalog_cache[cache_key] = (now, items)
             return items
+        # Expired -- remove stale entry
+        del _catalog_cache[cache_key]
 
     generator = CatalogGenerator(db)
     items = generator.get_catalog_content(catalog_id, user_id=user_id)
     _catalog_cache[cache_key] = (now, items)
-
-    # Evict stale entries if cache grows large
-    if len(_catalog_cache) > 500:
-        stale = [k for k, (t, _) in _catalog_cache.items() if now - t > ttl]
-        for k in stale:
-            del _catalog_cache[k]
+    _cache_evict()
 
     return items
 
@@ -413,10 +445,13 @@ async def start_auth(
     if password != settings.master_password:
         raise HTTPException(status_code=403, detail="Invalid master password")
 
-    # Generate state for CSRF protection
+    # Generate state for CSRF protection and persist it
     state = secrets.token_urlsafe(32)
-
-    # TODO: Store state in session or database
+    with get_db() as db_session:
+        # Clean up expired states (older than 10 minutes)
+        cutoff = datetime.utcnow() - timedelta(minutes=10)
+        db_session.query(OAuthState).filter(OAuthState.created_at < cutoff).delete()
+        db_session.add(OAuthState(state=state))
 
     # Get Trakt authorization URL
     auth_url = trakt_client.get_authorization_url(state)
@@ -437,7 +472,26 @@ async def trakt_callback(
         code: Authorization code
         state: State for CSRF protection
     """
-    # TODO: Verify state
+    # Verify CSRF state
+    oauth_state = db.query(OAuthState).filter(OAuthState.state == state).first()
+    if not oauth_state:
+        return HTMLResponse(
+            content=auth_error_html("Invalid or expired OAuth state. Please try again."),
+            status_code=400,
+        )
+
+    # Check if state is expired (10 minute window)
+    if datetime.utcnow() - oauth_state.created_at > timedelta(minutes=10):
+        db.query(OAuthState).filter(OAuthState.state == state).delete()
+        db.commit()
+        return HTMLResponse(
+            content=auth_error_html("OAuth state expired. Please try again."),
+            status_code=400,
+        )
+
+    # Consume the state token (one-time use)
+    db.query(OAuthState).filter(OAuthState.state == state).delete()
+    db.commit()
 
     try:
         # Exchange code for token
@@ -445,6 +499,11 @@ async def trakt_callback(
 
         # Get user profile
         profile = await trakt_client.get_user_profile(token_data["access_token"])
+
+        # Encrypt tokens before storage
+        encrypted_access = encrypt_token(token_data["access_token"])
+        encrypted_refresh = encrypt_token(token_data["refresh_token"])
+        expires_at = datetime.utcnow() + timedelta(seconds=token_data["expires_in"])
 
         # Create or update user
         user = (
@@ -455,8 +514,9 @@ async def trakt_callback(
 
         if user:
             # Update existing user
-            user.trakt_access_token = token_data["access_token"]
-            user.trakt_refresh_token = token_data["refresh_token"]
+            user.trakt_access_token = encrypted_access
+            user.trakt_refresh_token = encrypted_refresh
+            user.trakt_token_expires_at = expires_at
             user.last_login = datetime.utcnow()  # type: ignore[assignment]
         else:
             # Create new user
@@ -465,10 +525,9 @@ async def trakt_callback(
                 user_key=user_key,
                 trakt_user_id=str(profile["ids"]["slug"]),
                 trakt_username=profile.get("username"),
-                trakt_access_token=token_data["access_token"],
-                trakt_refresh_token=token_data["refresh_token"],
-                trakt_token_expires_at=datetime.utcnow()
-                + timedelta(seconds=token_data["expires_in"]),
+                trakt_access_token=encrypted_access,
+                trakt_refresh_token=encrypted_refresh,
+                trakt_token_expires_at=expires_at,
             )
             db.add(user)
 
