@@ -12,6 +12,7 @@ from time import time
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import secrets
@@ -25,6 +26,16 @@ from app.trakt_client import trakt_client
 from app.crypto import encrypt_token, decrypt_token
 from app.landing import landing_page_html, auth_success_html, auth_error_html
 from app.admin import router as admin_router, load_settings_from_db
+
+
+# ---- Manifest cache (avoids DB query on every manifest request) ----
+_manifest_cache: dict[str, tuple[float, dict]] = {}
+_MANIFEST_TTL = 300  # 5 minutes
+
+
+def _invalidate_manifest_cache():
+    """Call after admin changes categories to clear cached manifests."""
+    _manifest_cache.clear()
 
 
 async def ensure_valid_trakt_token(user: User, db: Session) -> str:
@@ -65,6 +76,9 @@ app = FastAPI(
     description="AI-curated cinema for Stremio",
     version="1.0.0",
 )
+
+# GZip middleware — compress responses >=500 bytes (big win on mobile)
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # CORS middleware (required for Stremio)
 app.add_middleware(
@@ -140,7 +154,9 @@ async def shutdown_event():
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Landing page with install options and Trakt connect."""
-    return HTMLResponse(content=landing_page_html())
+    response = HTMLResponse(content=landing_page_html())
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return response
 
 
 @app.get("/health")
@@ -164,6 +180,15 @@ async def universal_manifest(db: Session = Depends(get_db_dependency)):
     Stremio derives the base URL by stripping the last path segment,
     so /manifest.json -> base URL is / -> catalogs at /catalog/{type}/{id}.json
     """
+    now = time()
+    cache_key = "universal"
+    if cache_key in _manifest_cache:
+        cached_at, cached_manifest = _manifest_cache[cache_key]
+        if now - cached_at < _MANIFEST_TTL:
+            response = JSONResponse(content=cached_manifest)
+            response.headers["Cache-Control"] = "public, max-age=3600"
+            return response
+
     # Get active universal categories
     categories = (
         db.query(UniversalCategory)
@@ -196,7 +221,11 @@ async def universal_manifest(db: Session = Depends(get_db_dependency)):
         "behaviorHints": {"configurable": True, "configurationRequired": False},
     }
 
-    return JSONResponse(content=manifest)
+    _manifest_cache[cache_key] = (now, manifest)
+
+    response = JSONResponse(content=manifest)
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return response
 
 
 @app.get("/manifest/universal.json")
@@ -277,7 +306,9 @@ async def personalized_manifest(
         "behaviorHints": {"configurable": True, "configurationRequired": False},
     }
 
-    return JSONResponse(content=manifest)
+    response = JSONResponse(content=manifest)
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return response
 
 
 @app.get("/manifest/{user_key}.json")
