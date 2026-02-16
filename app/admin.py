@@ -515,7 +515,7 @@ async def stop_build(request: Request, _=Depends(verify_admin)):
         raise HTTPException(404, "No build is currently running")
 
     # Cancel the asyncio task if it exists
-    if has_task:
+    if has_task and _active_build_task is not None:
         _active_build_task.cancel()
         try:
             await asyncio.wait_for(_active_build_task, timeout=5.0)
@@ -638,9 +638,7 @@ async def debug_catalogs(request: Request, _=Depends(verify_admin)):
 
             # Layer 6: Last tagging job status
             last_job = (
-                db.query(TaggingJob)
-                .order_by(TaggingJob.started_at.desc())
-                .first()
+                db.query(TaggingJob).order_by(TaggingJob.started_at.desc()).first()
             )
 
             # Build diagnosis
@@ -707,9 +705,7 @@ async def regenerate_catalogs(request: Request, _=Depends(verify_admin)):
         generator = CatalogGenerator(db)
         generator.regenerate_all_universal_catalogs()
 
-        new_total = (
-            db.query(func.count(UniversalCatalogContent.tmdb_id)).scalar() or 0
-        )
+        new_total = db.query(func.count(UniversalCatalogContent.tmdb_id)).scalar() or 0
 
     logger.info(f"Catalog regeneration complete: {new_total} total items")
     return {"status": "ok", "total_catalog_items": new_total}

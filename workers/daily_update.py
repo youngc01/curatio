@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Tuple
 
 from loguru import logger
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 # Add parent directory to path
@@ -62,8 +63,7 @@ async def store_metadata(db: Session, items: list, media_type: str) -> None:
 
     for item in items:
         metadata_dict = tmdb_client.extract_metadata(item, media_type)  # type: ignore[arg-type]
-        metadata = MediaMetadata(**metadata_dict)
-        db.add(metadata)
+        db.merge(MediaMetadata(**metadata_dict))
 
     db.commit()
     logger.info(f"Stored metadata for {len(items)} items")
@@ -112,20 +112,34 @@ async def tag_items_batch(
             # Tag with Gemini
             tagged_items = await gemini_engine.tag_items(gemini_items)
 
-            # Store tags using merge() for safe upsert
+            # Store tags using PostgreSQL ON CONFLICT upsert
+            rows = []
             for tagged_item in tagged_items:
                 tmdb_id = tagged_item["tmdb_id"]
                 tags = tagged_item.get("tags", {})
 
                 for tag_name, confidence in tags.items():
                     if tag_name in tag_map:
-                        movie_tag = MovieTag(
-                            tmdb_id=tmdb_id,
-                            tag_id=tag_map[tag_name],
-                            confidence=confidence,
-                            media_type=media_type,
+                        rows.append(
+                            {
+                                "tmdb_id": tmdb_id,
+                                "tag_id": tag_map[tag_name],
+                                "confidence": confidence,
+                                "media_type": media_type,
+                                "tagged_at": datetime.utcnow(),
+                            }
                         )
-                        db.merge(movie_tag)
+
+            if rows:
+                stmt = pg_insert(MovieTag).values(rows)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["tmdb_id", "tag_id"],
+                    set_={
+                        "confidence": stmt.excluded.confidence,
+                        "tagged_at": stmt.excluded.tagged_at,
+                    },
+                )
+                db.execute(stmt)
 
             db.commit()
             total_processed += len(batch)
