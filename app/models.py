@@ -25,6 +25,25 @@ class Base(DeclarativeBase):
     pass
 
 
+class OAuthState(Base):
+    """CSRF state tokens for OAuth flows."""
+
+    __tablename__ = "oauth_states"
+
+    state = Column(String(100), primary_key=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # States expire after 10 minutes
+
+
+class AdminSession(Base):
+    """Persistent admin sessions (survives restarts)."""
+
+    __tablename__ = "admin_sessions"
+
+    token = Column(String(64), primary_key=True)
+    expires_at = Column(DateTime, nullable=False)
+
+
 class Tag(Base):
     """Master list of all semantic tags used for categorization."""
 
@@ -67,6 +86,8 @@ class MovieTag(Base):
     __table_args__ = (
         Index("idx_tmdb_media", "tmdb_id", "media_type"),
         Index("idx_tag_confidence", "tag_id", "confidence"),
+        Index("idx_media_confidence", "media_type", "confidence"),
+        Index("idx_tagged_at", "tagged_at"),
     )
 
     def __repr__(self):
@@ -127,7 +148,10 @@ class UniversalCatalogContent(Base):
     category = relationship("UniversalCategory", back_populates="catalog_items")
 
     # Indexes
-    __table_args__ = (Index("idx_category_rank", "category_id", "rank"),)
+    __table_args__ = (
+        Index("idx_category_rank", "category_id", "rank"),
+        Index("idx_ucc_media_type", "media_type"),
+    )
 
     def __repr__(self):
         return f"<UniversalCatalogContent(category_id='{self.category_id}', tmdb_id={self.tmdb_id}, rank={self.rank})>"
@@ -139,13 +163,13 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_key = Column(String(64), unique=True, nullable=False, index=True)
-    # user_key is a UUID that goes in the Stremio manifest URL
+    user_key = Column(String(100), unique=True, nullable=False, index=True)
+    # user_key is a URL-safe token that goes in the Stremio manifest URL
 
     trakt_user_id = Column(String(100), unique=True, nullable=False, index=True)
     trakt_username = Column(String(100), nullable=True)
-    trakt_access_token = Column(String(500), nullable=False)
-    trakt_refresh_token = Column(String(500), nullable=False)
+    trakt_access_token = Column(Text, nullable=False)  # encrypted at rest
+    trakt_refresh_token = Column(Text, nullable=False)  # encrypted at rest
     trakt_token_expires_at = Column(DateTime, nullable=False)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -158,6 +182,8 @@ class User(Base):
     personal_catalogs = relationship(
         "UserCatalog", back_populates="user", cascade="all, delete-orphan"
     )
+
+    __table_args__ = (Index("idx_active_sync", "is_active", "last_sync"),)
 
     def __repr__(self):
         return f"<User(id={self.id}, trakt_username='{self.trakt_username}')>"
@@ -268,6 +294,7 @@ class MediaMetadata(Base):
     __table_args__ = (
         Index("idx_media_type_popularity", "media_type", "popularity"),
         Index("idx_release_date", "release_date"),
+        Index("idx_ratings", "media_type", "vote_average", "vote_count"),
     )
 
     def __repr__(self):
@@ -294,7 +321,7 @@ class TaggingJob(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     job_type = Column(String(50), nullable=False)
-    # Types: 'initial_build', 'weekly_update', 'manual_retag'
+    # Types: 'database_build', 'weekly_update', 'manual_retag'
 
     started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     completed_at = Column(DateTime, nullable=True)

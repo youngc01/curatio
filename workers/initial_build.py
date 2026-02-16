@@ -1,8 +1,8 @@
 """
-Initial database build worker.
+Database build worker.
 
-This is the ONE-TIME job that costs ~$5 and tags all movies and TV shows.
-Run this once, then use free tier for weekly updates forever.
+Tags all movies and TV shows using the Gemini API.
+Run this once, then use the free tier for weekly updates.
 
 Usage:
     python workers/initial_build.py --movies 100000 --shows 50000
@@ -139,13 +139,13 @@ async def create_tags(db: Session):
     logger.info(f"Created {created_count} new tags")
 
 
-async def fetch_popular_items(media_type: MediaType, limit: int):
-    """Fetch popular movies or TV shows from TMDB."""
-    logger.info(f"Fetching {limit} popular {media_type} items from TMDB...")
+async def fetch_items(media_type: MediaType, limit: int):
+    """Fetch movies or TV shows from TMDB using multi-strategy discovery."""
+    logger.info(f"Fetching up to {limit} {media_type} items from TMDB...")
 
-    items = await tmdb_client.get_popular_items(media_type, limit=limit)
+    items = await tmdb_client.fetch_all_items(media_type, limit=limit)
 
-    logger.info(f"Fetched {len(items)} {media_type} items")
+    logger.info(f"Fetched {len(items)} unique {media_type} items")
     return items
 
 
@@ -335,10 +335,10 @@ async def main(movies_limit: int, shows_limit: int):
     start_time = datetime.utcnow()
 
     logger.info("=" * 80)
-    logger.info("INITIAL DATABASE BUILD - One-Time $5 Job")
+    logger.info("DATABASE BUILD")
     logger.info("=" * 80)
     logger.info(f"Target: {movies_limit} movies + {shows_limit} TV shows")
-    logger.info("Estimated cost: ~$5")
+    logger.info("Uses Gemini API calls")
     logger.info("Estimated time: ~3 hours")
     logger.info("=" * 80)
 
@@ -348,7 +348,7 @@ async def main(movies_limit: int, shows_limit: int):
     with get_db() as db:
         # Create tagging job record
         job = TaggingJob(
-            job_type="initial_build", started_at=start_time, status="running"
+            job_type="database_build", started_at=start_time, status="running"
         )
         db.add(job)
         db.commit()
@@ -361,14 +361,14 @@ async def main(movies_limit: int, shows_limit: int):
             await create_universal_categories(db)
 
             # Step 3: Fetch movies
-            movies = await fetch_popular_items("movie", movies_limit)
+            movies = await fetch_items("movie", movies_limit)
             await store_metadata(db, movies, "movie")
 
             # Step 4: Tag movies
             movies_processed, movies_failed = await tag_items_batch(db, movies, "movie")
 
             # Step 5: Fetch TV shows
-            shows = await fetch_popular_items("tv", shows_limit)
+            shows = await fetch_items("tv", shows_limit)
             await store_metadata(db, shows, "tv")
 
             # Step 6: Tag TV shows
@@ -394,12 +394,11 @@ async def main(movies_limit: int, shows_limit: int):
             logger.info("=" * 80)
             logger.info("BUILD COMPLETE!")
             logger.info("=" * 80)
-            logger.info(f"Movies processed: {movies_processed} / {movies_limit}")
-            logger.info(f"Shows processed: {shows_processed} / {shows_limit}")
+            logger.info(f"Movies fetched: {len(movies)}, tagged: {movies_processed}")
+            logger.info(f"Shows fetched: {len(shows)}, tagged: {shows_processed}")
             logger.info(f"Total items: {movies_processed + shows_processed}")
             logger.info(f"Failed: {movies_failed + shows_failed}")
             logger.info(f"Duration: {duration:.1f} hours")
-            logger.info("Estimated cost: ~$5")
             logger.info("=" * 80)
             logger.info("Next steps:")
             logger.info("1. Set GEMINI_PAID_TIER=false in .env")

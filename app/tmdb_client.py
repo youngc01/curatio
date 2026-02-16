@@ -277,6 +277,183 @@ class TMDBClient:
         logger.info(f"Fetched {len(all_results)} popular {media_type} items")
         return all_results[:limit]
 
+    async def _paginate_discover(
+        self,
+        media_type: MediaType,
+        params: Dict,
+        seen_ids: set,
+        max_pages: int = 500,
+    ) -> List[Dict]:
+        """Paginate through a discover query, skipping already-seen IDs."""
+        results = []
+        endpoint = "/discover/movie" if media_type == "movie" else "/discover/tv"
+
+        for page in range(1, max_pages + 1):
+            params["page"] = page
+            try:
+                response = await self._request(endpoint, params=params.copy())
+            except Exception as e:
+                logger.warning(f"Discover page {page} failed: {e}")
+                break
+
+            items = response.get("results", [])
+            if not items:
+                break
+
+            for item in items:
+                tmdb_id = item.get("id")
+                if tmdb_id and tmdb_id not in seen_ids:
+                    seen_ids.add(tmdb_id)
+                    results.append(item)
+
+            if page >= response.get("total_pages", 1):
+                break
+
+        return results
+
+    async def fetch_all_items(
+        self, media_type: MediaType, limit: int = 100000
+    ) -> List[Dict]:
+        """
+        Fetch items using multiple strategies to maximize catalog coverage.
+
+        Strategies applied in order:
+        1. Popular endpoint (baseline)
+        2. Top rated
+        3. Discover by year (each year gets its own 500-page window)
+        4. Discover by vote average (hidden gems with good ratings)
+        5. Discover by language (international cinema)
+
+        Args:
+            media_type: 'movie' or 'tv'
+            limit: Maximum number of unique items to fetch
+
+        Returns:
+            Deduplicated list of media items
+        """
+        seen_ids: set = set()
+        all_items: List[Dict] = []
+
+        def _add_items(items: List[Dict], label: str):
+            new = 0
+            for item in items:
+                tmdb_id = item.get("id")
+                if tmdb_id and tmdb_id not in seen_ids:
+                    seen_ids.add(tmdb_id)
+                    all_items.append(item)
+                    new += 1
+            logger.info(
+                f"[{media_type}] {label}: +{new} new items "
+                f"(total: {len(all_items)})"
+            )
+
+        # --- Strategy 1: Popular endpoint ---
+        popular = await self.get_popular_items(media_type, limit=10000)
+        _add_items(popular, "Popular")
+
+        if len(all_items) >= limit:
+            return all_items[:limit]
+
+        # --- Strategy 2: Top rated ---
+        logger.info(f"[{media_type}] Fetching top rated...")
+        top_rated = []
+        for page in range(1, 501):
+            try:
+                if media_type == "movie":
+                    resp = await self.get_top_rated_movies(page)
+                else:
+                    resp = await self.get_top_rated_tv_shows(page)
+            except Exception:
+                break
+            items = resp.get("results", [])
+            if not items:
+                break
+            top_rated.extend(items)
+            if page >= resp.get("total_pages", 1):
+                break
+        _add_items(top_rated, "Top Rated")
+
+        if len(all_items) >= limit:
+            return all_items[:limit]
+
+        # --- Strategy 3: Discover by year (most popular per year) ---
+        current_year = datetime.now().year
+        year_key = "primary_release_year" if media_type == "movie" else "first_air_date_year"
+
+        for year in range(current_year, 1969, -1):
+            if len(all_items) >= limit:
+                break
+            logger.info(f"[{media_type}] Discovering year {year}...")
+            params = {
+                "sort_by": "popularity.desc",
+                "include_adult": False,
+                year_key: year,
+            }
+            if media_type == "movie":
+                params["include_video"] = False
+            items = await self._paginate_discover(
+                media_type, params, seen_ids, max_pages=500
+            )
+            all_items.extend(items)
+            logger.info(
+                f"[{media_type}] Year {year}: +{len(items)} new "
+                f"(total: {len(all_items)})"
+            )
+
+        if len(all_items) >= limit:
+            return all_items[:limit]
+
+        # --- Strategy 4: Hidden gems (high vote avg, lower popularity) ---
+        logger.info(f"[{media_type}] Fetching hidden gems...")
+        for min_votes in [100, 50, 20]:
+            if len(all_items) >= limit:
+                break
+            params = {
+                "sort_by": "vote_average.desc",
+                "vote_count.gte": min_votes,
+                "include_adult": False,
+            }
+            if media_type == "movie":
+                params["include_video"] = False
+            items = await self._paginate_discover(
+                media_type, params, seen_ids, max_pages=500
+            )
+            all_items.extend(items)
+            logger.info(
+                f"[{media_type}] Hidden gems (votes>={min_votes}): "
+                f"+{len(items)} new (total: {len(all_items)})"
+            )
+
+        if len(all_items) >= limit:
+            return all_items[:limit]
+
+        # --- Strategy 5: International cinema by language ---
+        languages = ["ko", "ja", "fr", "es", "de", "it", "hi", "zh", "pt", "sv", "da", "no", "th", "tr", "pl"]
+        logger.info(f"[{media_type}] Fetching international content...")
+        for lang in languages:
+            if len(all_items) >= limit:
+                break
+            params = {
+                "sort_by": "popularity.desc",
+                "with_original_language": lang,
+                "include_adult": False,
+            }
+            if media_type == "movie":
+                params["include_video"] = False
+            items = await self._paginate_discover(
+                media_type, params, seen_ids, max_pages=500
+            )
+            all_items.extend(items)
+            logger.info(
+                f"[{media_type}] Language '{lang}': +{len(items)} new "
+                f"(total: {len(all_items)})"
+            )
+
+        logger.info(
+            f"[{media_type}] Fetch complete: {len(all_items)} unique items"
+        )
+        return all_items[:limit]
+
     def extract_metadata(self, item: Dict, media_type: MediaType) -> Dict:
         """
         Extract relevant metadata from TMDB response.

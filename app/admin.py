@@ -20,6 +20,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import (
     AdminSetting,
+    AdminSession,
     Tag,
     MovieTag,
     MediaMetadata,
@@ -31,8 +32,7 @@ from app.models import (
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-# In-memory session store and active build task
-_admin_sessions: dict[str, datetime] = {}
+# Active build task (in-memory, intentionally not persisted)
 _active_build_task: Optional[asyncio.Task] = None
 SESSION_DURATION = timedelta(hours=24)
 
@@ -50,7 +50,17 @@ def _start_log_capture():
     _build_logs.clear()
 
     def _sink(message):
-        _build_logs.append(str(message).rstrip())
+        line = str(message).rstrip()
+        _build_logs.append(line)
+        # Broadcast to WebSocket clients (fire-and-forget)
+        if _ws_clients:
+            import asyncio as _aio
+
+            try:
+                loop = _aio.get_running_loop()
+                loop.create_task(_broadcast_log(line))
+            except RuntimeError:
+                pass  # no running loop (e.g. during testing)
 
     _build_log_sink_id = logger.add(
         _sink,
@@ -118,13 +128,17 @@ def _stop_log_capture():
 
 
 def verify_admin(request: Request):
-    """Verify admin authentication via cookie."""
+    """Verify admin authentication via cookie (DB-backed sessions)."""
     token = request.cookies.get("admin_token")
-    if not token or token not in _admin_sessions:
+    if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    if datetime.utcnow() > _admin_sessions[token]:
-        del _admin_sessions[token]
-        raise HTTPException(status_code=401, detail="Session expired")
+    with get_db() as db:
+        session = db.query(AdminSession).filter(AdminSession.token == token).first()
+        if not session:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        if datetime.utcnow() > session.expires_at:
+            db.query(AdminSession).filter(AdminSession.token == token).delete()
+            raise HTTPException(status_code=401, detail="Session expired")
     return True
 
 
@@ -186,7 +200,14 @@ async def admin_login(request: Request):
         raise HTTPException(status_code=401, detail="Invalid password")
 
     token = secrets.token_hex(32)
-    _admin_sessions[token] = datetime.utcnow() + SESSION_DURATION
+    expires_at = datetime.utcnow() + SESSION_DURATION
+
+    with get_db() as db:
+        # Clean up expired sessions
+        db.query(AdminSession).filter(
+            AdminSession.expires_at < datetime.utcnow()
+        ).delete()
+        db.add(AdminSession(token=token, expires_at=expires_at))
 
     response = JSONResponse({"status": "ok"})
     response.set_cookie(
@@ -203,8 +224,9 @@ async def admin_login(request: Request):
 async def admin_logout(request: Request):
     """Clear admin session."""
     token = request.cookies.get("admin_token")
-    if token in _admin_sessions:
-        del _admin_sessions[token]
+    if token:
+        with get_db() as db:
+            db.query(AdminSession).filter(AdminSession.token == token).delete()
     response = JSONResponse({"status": "ok"})
     response.delete_cookie("admin_token")
     return response
@@ -411,7 +433,7 @@ async def start_build(request: Request, _=Depends(verify_admin)):
             _stop_log_capture()
 
     _active_build_task = asyncio.create_task(_run())
-    logger.info(f"Initial build started: {movies} movies, {shows} shows")
+    logger.info(f"Database build started: {movies} movies, {shows} shows")
     return {"status": "started", "movies": movies, "shows": shows}
 
 
@@ -567,6 +589,41 @@ async def get_build_logs(
     return {"lines": logs, "total": total}
 
 
+# ---- WebSocket for live build logs ----
+_ws_clients: set = set()
+
+
+@router.websocket("/ws/build-logs")
+async def ws_build_logs(ws):
+    """WebSocket endpoint for real-time build log streaming."""
+    from starlette.websockets import WebSocketDisconnect
+
+    await ws.accept()
+    _ws_clients.add(ws)
+    # Send existing logs as initial payload
+    for line in list(_build_logs):
+        await ws.send_text(line)
+    try:
+        while True:
+            # Keep connection alive; client doesn't send data
+            await ws.receive_text()
+    except (WebSocketDisconnect, Exception):
+        pass
+    finally:
+        _ws_clients.discard(ws)
+
+
+async def _broadcast_log(line: str):
+    """Send a log line to all connected WebSocket clients."""
+    dead = set()
+    for ws in _ws_clients:
+        try:
+            await ws.send_text(line)
+        except Exception:
+            dead.add(ws)
+    _ws_clients -= dead
+
+
 @router.get("/api/debug")
 async def debug_catalogs(request: Request, _=Depends(verify_admin)):
     """Full diagnostic of the catalog pipeline to identify issues."""
@@ -672,7 +729,7 @@ async def debug_catalogs(request: Request, _=Depends(verify_admin)):
             # Build diagnosis
             issues = []
             if tag_count == 0:
-                issues.append("No tags exist. Run initial build to create tags.")
+                issues.append("No tags exist. Run a database build to create tags.")
             if movies_tagged == 0 and shows_tagged == 0:
                 issues.append("No items have been tagged yet.")
             if metadata_count == 0:
@@ -767,23 +824,23 @@ a{color:#58a6ff;text-decoration:none}
 .login-box h1{font-size:24px;margin-bottom:8px;color:#e6edf3}
 .login-box p{color:#8b949e;margin-bottom:32px;font-size:14px}
 .login-box input{width:100%;padding:12px 16px;background:#0d1117;border:1px solid #30363d;border-radius:8px;color:#e6edf3;font-size:16px;margin-bottom:16px;outline:none;transition:border-color .2s}
-.login-box input:focus{border-color:#e50914}
-.login-box button{width:100%;padding:12px;background:#e50914;color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;transition:background .2s}
-.login-box button:hover{background:#c40812}
+.login-box input:focus{border-color:#a855f7}
+.login-box button{width:100%;padding:12px;background:#a855f7;color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;transition:background .2s}
+.login-box button:hover{background:#7c3aed}
 .login-error{color:#f85149;margin-top:12px;font-size:14px;min-height:20px}
 
 /* Dashboard layout */
 #dashboard{display:none;min-height:100vh}
 .topbar{display:flex;align-items:center;justify-content:space-between;padding:16px 32px;background:#161b22;border-bottom:1px solid #30363d;position:sticky;top:0;z-index:100}
 .topbar h1{font-size:18px;font-weight:600}
-.topbar h1 span{color:#e50914}
+.topbar h1 span{color:#a855f7}
 .topbar-actions{display:flex;gap:12px;align-items:center}
 .topbar-actions button{padding:6px 16px;background:transparent;border:1px solid #30363d;border-radius:6px;color:#8b949e;font-size:13px;cursor:pointer;transition:all .2s}
 .topbar-actions button:hover{color:#e6edf3;border-color:#8b949e}
 .tab-nav{display:flex;gap:0;background:#161b22;border-bottom:1px solid #30363d;padding:0 32px}
 .tab-btn{padding:12px 20px;background:none;border:none;border-bottom:2px solid transparent;color:#8b949e;font-size:14px;font-weight:500;cursor:pointer;transition:all .2s}
 .tab-btn:hover{color:#e6edf3}
-.tab-btn.active{color:#e6edf3;border-bottom-color:#e50914}
+.tab-btn.active{color:#e6edf3;border-bottom-color:#a855f7}
 .main{padding:32px;max-width:1200px;margin:0 auto}
 
 /* Tabs */
@@ -814,15 +871,15 @@ a{color:#58a6ff;text-decoration:none}
 .toggle{display:flex;align-items:center;gap:12px;cursor:pointer}
 .toggle input{display:none}
 .toggle-track{width:44px;height:24px;background:#30363d;border-radius:12px;position:relative;transition:background .2s}
-.toggle input:checked+.toggle-track{background:#e50914}
+.toggle input:checked+.toggle-track{background:#a855f7}
 .toggle-track::after{content:'';position:absolute;width:20px;height:20px;background:#e6edf3;border-radius:50%;top:2px;left:2px;transition:transform .2s}
 .toggle input:checked+.toggle-track::after{transform:translateX(20px)}
 .toggle-label{font-size:14px;color:#e6edf3}
 
 /* Buttons */
 .btn{padding:10px 20px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;gap:8px}
-.btn-primary{background:#e50914;color:#fff}
-.btn-primary:hover{background:#c40812}
+.btn-primary{background:#a855f7;color:#fff}
+.btn-primary:hover{background:#7c3aed}
 .btn-primary:disabled{background:#30363d;color:#8b949e;cursor:not-allowed}
 .btn-secondary{background:#21262d;color:#e6edf3;border:1px solid #30363d}
 .btn-secondary:hover{background:#30363d}
@@ -844,7 +901,7 @@ tr:last-child td{border-bottom:none}
 
 /* Build progress */
 .progress-bar{width:100%;height:8px;background:#21262d;border-radius:4px;overflow:hidden;margin:12px 0}
-.progress-fill{height:100%;background:linear-gradient(90deg,#e50914,#ff6b6b);border-radius:4px;transition:width .5s ease}
+.progress-fill{height:100%;background:linear-gradient(90deg,#a855f7,#c084fc);border-radius:4px;transition:width .5s ease}
 
 /* Log viewer */
 .log-viewer{background:#010409;border:1px solid #30363d;border-radius:8px;padding:12px;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:12px;line-height:1.6;color:#8b949e;max-height:400px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
@@ -864,7 +921,7 @@ tr:last-child td{border-bottom:none}
 .alert-info{background:#1f6feb22;border:1px solid #1f6feb55;color:#58a6ff}
 
 /* Spinner */
-.spinner{display:inline-block;width:18px;height:18px;border:2px solid #30363d;border-top-color:#e50914;border-radius:50%;animation:spin .8s linear infinite}
+.spinner{display:inline-block;width:18px;height:18px;border:2px solid #30363d;border-top-color:#a855f7;border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* Toast */
@@ -1073,9 +1130,9 @@ tr:last-child td{border-bottom:none}
 
       <div class="card-row">
         <div class="card">
-          <h3>Initial Build</h3>
+          <h3>Database Build</h3>
           <p style="color:#8b949e;font-size:13px;margin-bottom:20px">
-            One-time job to tag movies and TV shows. Requires Gemini paid tier for large batches.
+            Tag movies and TV shows using the Gemini API. Requires paid tier for large batches.
           </p>
           <div class="card-row">
             <div class="form-group">
@@ -1087,7 +1144,7 @@ tr:last-child td{border-bottom:none}
               <input type="number" id="build-shows" value="50000" min="100" step="100">
             </div>
           </div>
-          <button class="btn btn-primary" id="btn-start-build" onclick="startBuild()">Start Initial Build</button>
+          <button class="btn btn-primary" id="btn-start-build" onclick="startBuild()">Start Database Build</button>
         </div>
 
         <div class="card">
@@ -1353,7 +1410,7 @@ async function startBuild() {
   const movies = parseInt(document.getElementById('build-movies').value) || 100000;
   const shows = parseInt(document.getElementById('build-shows').value) || 50000;
 
-  if (!confirm('Start initial build?\\n\\nMovies: ' + fmtNum(movies) + '\\nTV Shows: ' + fmtNum(shows) +
+  if (!confirm('Start database build?\\n\\nMovies: ' + fmtNum(movies) + '\\nTV Shows: ' + fmtNum(shows) +
     '\\n\\nThis may take several hours and will use Gemini API calls.')) return;
 
   try {
@@ -1398,19 +1455,47 @@ async function stopBuild() {
   }
 }
 
+let buildWs = null;
+
 function startBuildPolling() {
   logOffset = 0;
   document.getElementById('log-viewer').innerHTML = '';
   if (buildPollTimer) clearInterval(buildPollTimer);
   if (logPollTimer) clearInterval(logPollTimer);
   buildPollTimer = setInterval(loadBuildStatus, 5000);
-  logPollTimer = setInterval(pollLogs, 3000);
-  pollLogs(); // fetch immediately
+
+  // Try WebSocket first, fall back to polling
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  try {
+    buildWs = new WebSocket(proto + '//' + location.host + '/admin/ws/build-logs');
+    buildWs.onmessage = function(e) {
+      const viewer = document.getElementById('log-viewer');
+      const wasScrolled = viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight < 40;
+      const safe = e.data.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      viewer.innerHTML += colorLogLine(safe) + '\\n';
+      logOffset++;
+      document.getElementById('log-count').textContent = '(' + logOffset + ' lines)';
+      if (wasScrolled) viewer.scrollTop = viewer.scrollHeight;
+    };
+    buildWs.onerror = function() { _fallbackToPoll(); };
+    buildWs.onclose = function() { buildWs = null; };
+  } catch(e) {
+    _fallbackToPoll();
+  }
+}
+
+function _fallbackToPoll() {
+  if (buildWs) { try { buildWs.close(); } catch(e){} buildWs = null; }
+  if (!logPollTimer) {
+    logPollTimer = setInterval(pollLogs, 3000);
+    pollLogs();
+  }
 }
 
 function stopBuildPolling() {
   if (buildPollTimer) { clearInterval(buildPollTimer); buildPollTimer = null; }
   if (logPollTimer) { clearInterval(logPollTimer); logPollTimer = null; }
+  if (buildWs) { try { buildWs.close(); } catch(e){} buildWs = null; }
 }
 
 function colorLogLine(line) {

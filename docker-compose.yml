@@ -5,9 +5,9 @@ services:
     image: postgres:15-alpine
     container_name: curatio-postgres
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: stremio_ai
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-stremio_ai}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
@@ -28,7 +28,7 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://postgres:password@postgres:5432/stremio_ai
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-stremio_ai}
       - DAILY_UPDATE_ENABLED=${DAILY_UPDATE_ENABLED:-false}
       - DAILY_UPDATE_TIME=${DAILY_UPDATE_TIME:-03:00}
     ports:
@@ -47,7 +47,7 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://postgres:5432/stremio_ai
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-stremio_ai}
     volumes:
       - ./app:/app/app
       - ./workers:/app/workers
