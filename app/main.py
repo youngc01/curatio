@@ -30,6 +30,7 @@ def _stremio_type(media_type: str) -> str:
     """
     return "series" if media_type == "tv" else media_type
 
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Stremio AI Recommendations",
@@ -292,7 +293,9 @@ async def universal_catalog(
     # Apply pagination
     paginated_items = items[skip : skip + 100]
 
-    return JSONResponse(content={"metas": _build_stremio_metas(paginated_items, catalog_type)})
+    return JSONResponse(
+        content={"metas": _build_stremio_metas(paginated_items, catalog_type)}
+    )
 
 
 @app.get("/{user_key}/catalog/{catalog_type}/{catalog_id}.json")
@@ -336,7 +339,9 @@ async def personalized_catalog(
     # Apply pagination
     paginated_items = items[skip : skip + 100]
 
-    return JSONResponse(content={"metas": _build_stremio_metas(paginated_items, catalog_type)})
+    return JSONResponse(
+        content={"metas": _build_stremio_metas(paginated_items, catalog_type)}
+    )
 
 
 # OAuth endpoints for Trakt authentication

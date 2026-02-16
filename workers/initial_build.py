@@ -197,7 +197,9 @@ async def tag_items_batch(
             unique_items.append(item)
 
     if len(unique_items) < len(items):
-        logger.info(f"Deduplicated {len(items)} -> {len(unique_items)} items for tagging")
+        logger.info(
+            f"Deduplicated {len(items)} -> {len(unique_items)} items for tagging"
+        )
 
     # Skip items that are already tagged
     already_tagged = {
@@ -263,9 +265,7 @@ async def tag_items_batch(
             db.commit()
 
             total_processed += len(batch)
-            logger.info(
-                f"Progress: {total_processed}/{len(items_to_tag)} items tagged"
-            )
+            logger.info(f"Progress: {total_processed}/{len(items_to_tag)} items tagged")
 
         except Exception as e:
             logger.error(f"Failed to tag batch: {e}")

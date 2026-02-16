@@ -159,10 +159,7 @@ async def get_stats(request: Request, _=Depends(verify_admin)):
         }
 
         jobs = (
-            db.query(TaggingJob)
-            .order_by(TaggingJob.started_at.desc())
-            .limit(20)
-            .all()
+            db.query(TaggingJob).order_by(TaggingJob.started_at.desc()).limit(20).all()
         )
         stats["recent_jobs"] = [
             {
@@ -211,9 +208,7 @@ async def get_settings(request: Request, _=Depends(verify_admin)):
         "features": {
             "ENABLE_UNIVERSAL_CATALOGS": val("ENABLE_UNIVERSAL_CATALOGS").lower()
             in ("true", "1"),
-            "ENABLE_PERSONALIZED_CATALOGS": val(
-                "ENABLE_PERSONALIZED_CATALOGS"
-            ).lower()
+            "ENABLE_PERSONALIZED_CATALOGS": val("ENABLE_PERSONALIZED_CATALOGS").lower()
             in ("true", "1"),
             "ENABLE_TRAKT_SYNC": val("ENABLE_TRAKT_SYNC").lower() in ("true", "1"),
         },
@@ -297,9 +292,7 @@ async def _restart_scheduler():
         from app.scheduler import run_scheduler
 
         app.state.scheduler_task = asyncio.create_task(run_scheduler())
-        logger.info(
-            f"Scheduler restarted: daily at {settings.daily_update_time} UTC"
-        )
+        logger.info(f"Scheduler restarted: daily at {settings.daily_update_time} UTC")
 
 
 @router.post("/api/build/start")
