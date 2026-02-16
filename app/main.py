@@ -1,10 +1,13 @@
 """
-Main FastAPI application for Stremio AI Addon.
+Main FastAPI application for Curatio.
 
 Provides Stremio manifest and catalog endpoints.
 """
 
 import asyncio
+import hashlib
+import random
+from time import time
 
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
@@ -33,8 +36,8 @@ def _stremio_type(media_type: str) -> str:
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Stremio AI Recommendations",
-    description="Netflix-style AI-powered content discovery for Stremio",
+    title="Curatio",
+    description="AI-curated cinema for Stremio",
     version="1.0.0",
 )
 
@@ -54,7 +57,7 @@ app.include_router(admin_router)
 @app.on_event("startup")
 async def startup_event():
     """Initialize application on startup."""
-    logger.info("Starting Stremio AI Addon...")
+    logger.info("Starting Curatio...")
 
     # Validate configuration
     try:
@@ -92,7 +95,7 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown."""
-    logger.info("Shutting down Stremio AI Addon...")
+    logger.info("Shutting down Curatio...")
 
     # Cancel scheduler if running
     if getattr(app.state, "scheduler_task", None) is not None:
@@ -270,6 +273,72 @@ def _build_stremio_metas(items: list, catalog_type: str) -> list:
     return metas
 
 
+# ---- In-memory catalog cache ----
+_catalog_cache: dict[str, tuple[float, list]] = {}
+
+
+def _get_shuffle_seed(catalog_id: str) -> int:
+    """Deterministic shuffle seed based on catalog ID and current time window."""
+    hours = settings.catalog_shuffle_hours
+    if hours <= 0:
+        return 0  # shuffle disabled
+    window = int(time()) // (hours * 3600)
+    raw = f"{catalog_id}:{window}"
+    return int(hashlib.md5(raw.encode()).hexdigest()[:8], 16)
+
+
+def _shuffle_items(items: list, catalog_id: str) -> list:
+    """Shuffle items deterministically for the current time window."""
+    seed = _get_shuffle_seed(catalog_id)
+    if seed == 0:
+        return items
+    shuffled = list(items)
+    random.Random(seed).shuffle(shuffled)
+    return shuffled
+
+
+def _get_cached_catalog(
+    catalog_id: str, db: Session, user_id: int | None = None
+) -> list:
+    """Get catalog items with TTL-based caching."""
+    cache_key = f"{catalog_id}:user={user_id}"
+    now = time()
+    ttl = settings.cache_ttl
+
+    if cache_key in _catalog_cache:
+        cached_at, items = _catalog_cache[cache_key]
+        if now - cached_at < ttl:
+            return items
+
+    generator = CatalogGenerator(db)
+    items = generator.get_catalog_content(catalog_id, user_id=user_id)
+    _catalog_cache[cache_key] = (now, items)
+
+    # Evict stale entries if cache grows large
+    if len(_catalog_cache) > 500:
+        stale = [k for k, (t, _) in _catalog_cache.items() if now - t > ttl]
+        for k in stale:
+            del _catalog_cache[k]
+
+    return items
+
+
+def _serve_catalog(items: list, catalog_id: str, catalog_type: str, skip: int):
+    """Shuffle, paginate, and return a catalog response with cache headers."""
+    shuffled = _shuffle_items(items, catalog_id)
+    page_size = settings.catalog_page_size
+    paginated = shuffled[skip : skip + page_size]
+    metas = _build_stremio_metas(paginated, catalog_type)
+
+    # Cache-Control: let Stremio / browsers cache for a reasonable window
+    shuffle_hours = max(settings.catalog_shuffle_hours, 1)
+    max_age = shuffle_hours * 3600
+
+    response = JSONResponse(content={"metas": metas})
+    response.headers["Cache-Control"] = f"public, max-age={max_age}"
+    return response
+
+
 @app.get("/catalog/{catalog_type}/{catalog_id}.json")
 async def universal_catalog(
     catalog_type: str,
@@ -285,17 +354,8 @@ async def universal_catalog(
         catalog_id: Category ID
         skip: Pagination offset
     """
-    generator = CatalogGenerator(db)
-
-    # Get catalog content
-    items = generator.get_catalog_content(catalog_id)
-
-    # Apply pagination
-    paginated_items = items[skip : skip + 100]
-
-    return JSONResponse(
-        content={"metas": _build_stremio_metas(paginated_items, catalog_type)}
-    )
+    items = _get_cached_catalog(catalog_id, db)
+    return _serve_catalog(items, catalog_id, catalog_type, skip)
 
 
 @app.get("/{user_key}/catalog/{catalog_type}/{catalog_id}.json")
@@ -324,24 +384,17 @@ async def personalized_catalog(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    generator = CatalogGenerator(db)
-
     # Check if universal or personal catalog
     if catalog_id.startswith("universal-"):
         actual_id = catalog_id.replace("universal-", "", 1)
-        items = generator.get_catalog_content(actual_id)
+        items = _get_cached_catalog(actual_id, db)
     elif catalog_id.startswith("personal-"):
         actual_id = catalog_id.replace("personal-", "", 1)
-        items = generator.get_catalog_content(actual_id, user_id=user.id)  # type: ignore[arg-type]
+        items = _get_cached_catalog(actual_id, db, user_id=user.id)  # type: ignore[arg-type]
     else:
         raise HTTPException(status_code=404, detail="Catalog not found")
 
-    # Apply pagination
-    paginated_items = items[skip : skip + 100]
-
-    return JSONResponse(
-        content={"metas": _build_stremio_metas(paginated_items, catalog_type)}
-    )
+    return _serve_catalog(items, catalog_id, catalog_type, skip)
 
 
 # OAuth endpoints for Trakt authentication

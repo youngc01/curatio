@@ -141,7 +141,7 @@ class CatalogGenerator:
             )
             self.db.add(content)
 
-        self.db.commit()
+        self.db.flush()
         logger.info(f"Saved {len(tmdb_ids)} items to catalog '{category_id}'")
 
     def regenerate_all_universal_catalogs(self):
@@ -159,8 +159,10 @@ class CatalogGenerator:
                 tmdb_ids = self.generate_universal_catalog(category)
                 self.save_universal_catalog_content(category.id, tmdb_ids)
             except Exception as e:
+                self.db.rollback()
                 logger.error(f"Failed to generate catalog '{category.id}': {e}")
 
+        self.db.commit()
         logger.info("Universal catalog regeneration complete")
 
     def generate_personalized_catalog(
@@ -346,7 +348,7 @@ class CatalogGenerator:
             )
             self.db.add(content)
 
-        self.db.commit()
+        self.db.flush()
         logger.info(f"Saved user catalog '{name}' with {len(tmdb_ids)} items")
 
         return catalog

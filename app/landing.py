@@ -16,7 +16,7 @@ def landing_page_html() -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Recommendations — Stremio Addon</title>
+<title>Curatio — AI-Curated Cinema for Stremio</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{
@@ -28,8 +28,8 @@ body{{
   width:100%;padding:60px 20px 40px;text-align:center;
   background:linear-gradient(180deg,#1a1a2e 0%,#0d0d0d 100%);
 }}
-.hero h1{{font-size:2.4rem;font-weight:700;margin-bottom:8px}}
-.hero h1 span{{color:#e50914}}
+.hero h1{{font-size:2.4rem;font-weight:700;margin-bottom:8px;letter-spacing:2px}}
+.hero h1 span{{color:#a855f7}}
 .hero p{{color:#999;font-size:1.1rem;max-width:520px;margin:0 auto}}
 .container{{max-width:680px;width:100%;padding:0 20px}}
 .card{{
@@ -44,8 +44,8 @@ body{{
   cursor:pointer;border:none;text-decoration:none;transition:all .2s;
   width:100%;
 }}
-.btn-primary{{background:#e50914;color:#fff}}
-.btn-primary:hover{{background:#c40812}}
+.btn-primary{{background:#a855f7;color:#fff}}
+.btn-primary:hover{{background:#7c3aed}}
 .btn-secondary{{background:#2a2a2a;color:#e5e5e5;border:1px solid #444}}
 .btn-secondary:hover{{background:#333}}
 .btn-trakt{{background:#ed1c24;color:#fff}}
@@ -60,9 +60,9 @@ body{{
   width:100%;padding:12px 14px;background:#111;border:1px solid #333;
   border-radius:8px;color:#e5e5e5;font-size:.95rem;outline:none;
 }}
-.input-group input:focus{{border-color:#e50914}}
+.input-group input:focus{{border-color:#a855f7}}
 .error-msg{{
-  color:#e50914;font-size:.85rem;margin-top:8px;display:none;
+  color:#f87171;font-size:.85rem;margin-top:8px;display:none;
 }}
 .features{{
   display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:28px;
@@ -94,8 +94,8 @@ footer a:hover{{color:#e5e5e5}}
 <body>
 
 <div class="hero">
-  <h1><span>AI</span> Recommendations</h1>
-  <p>Netflix-style AI-powered content discovery for Stremio. 40 curated catalogs with 100k+ movies and shows.</p>
+  <h1><span>CURATIO</span></h1>
+  <p>AI-curated cinema for Stremio. 40 curated catalogs with 150k+ movies and shows.</p>
 </div>
 
 <div class="container">
@@ -157,7 +157,7 @@ footer a:hover{{color:#e5e5e5}}
 </div>
 
 <footer>
-  AI Recommendations Addon &middot; Powered by Gemini &amp; TMDB
+  Curatio &middot; Powered by Gemini &amp; TMDB
 </footer>
 
 <script>
@@ -210,7 +210,7 @@ def auth_success_html(username: str, manifest_url: str, user_key: str) -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Connected — AI Recommendations</title>
+<title>Connected — Curatio</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{
@@ -228,7 +228,7 @@ body{{
 }}
 .check svg{{stroke:#22c55e;width:32px;height:32px}}
 h1{{font-size:1.5rem;margin-bottom:4px}}
-h1 span{{color:#e50914}}
+h1 span{{color:#a855f7}}
 .user{{color:#999;font-size:.95rem;margin-bottom:28px}}
 .btn{{
   display:inline-flex;align-items:center;justify-content:center;gap:8px;
@@ -256,7 +256,7 @@ h1 span{{color:#e50914}}
     </svg>
   </div>
 
-  <h1><span>AI</span> Recommendations</h1>
+  <h1><span>CURATIO</span></h1>
   <p class="user">Connected as <strong>{username}</strong></p>
 
   <a class="btn btn-primary" href="{stremio_install}">
@@ -281,7 +281,7 @@ def auth_error_html(message: str) -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Error — AI Recommendations</title>
+<title>Error — Curatio</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{

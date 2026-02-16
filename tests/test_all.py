@@ -1,5 +1,5 @@
 """
-Comprehensive test suite for Stremio AI Addon.
+Comprehensive test suite for Curatio.
 
 Tests all major components: tagging, catalogs, API endpoints.
 """

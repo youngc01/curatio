@@ -1,5 +1,5 @@
 """
-Admin portal for Stremio AI Addon.
+Admin portal for Curatio.
 
 Provides a web dashboard to manage settings, trigger builds, and monitor status.
 Protected by master password authentication.
@@ -281,6 +281,8 @@ async def get_settings(request: Request, _=Depends(verify_admin)):
             "ADDON_NAME": val("ADDON_NAME"),
             "BASE_URL": val("BASE_URL"),
             "CATALOG_SIZE": int(val("CATALOG_SIZE")),
+            "CATALOG_PAGE_SIZE": int(val("CATALOG_PAGE_SIZE")),
+            "CATALOG_SHUFFLE_HOURS": int(val("CATALOG_SHUFFLE_HOURS")),
             "GEMINI_MODEL": val("GEMINI_MODEL"),
         },
         "features": {
@@ -311,6 +313,8 @@ async def update_settings(request: Request, _=Depends(verify_admin)):
         "ADDON_NAME",
         "BASE_URL",
         "CATALOG_SIZE",
+        "CATALOG_PAGE_SIZE",
+        "CATALOG_SHUFFLE_HOURS",
         "GEMINI_MODEL",
         "MASTER_PASSWORD",
         "ENABLE_UNIVERSAL_CATALOGS",
@@ -604,33 +608,57 @@ async def debug_catalogs(request: Request, _=Depends(verify_admin)):
             )
 
             # Per-category breakdown
+            # Snapshot category attributes up-front so a later rollback
+            # can't trigger DetachedInstanceError on lazy-refresh.
+            cat_snapshots = [
+                {
+                    "id": cat.id,
+                    "name": cat.name,
+                    "media_type": cat.media_type,
+                    "tag_formula": cat.tag_formula,
+                }
+                for cat in categories
+            ]
+
             category_details = []
             generator = CatalogGenerator(db)
-            for cat in categories:
+            for cat_info in cat_snapshots:
                 try:
                     content_count = (
                         db.query(func.count(UniversalCatalogContent.tmdb_id))
-                        .filter(UniversalCatalogContent.category_id == cat.id)
+                        .filter(
+                            UniversalCatalogContent.category_id == cat_info["id"]
+                        )
                         .scalar()
                         or 0
                     )
                 except Exception:
+                    db.rollback()
                     content_count = -1
                 # Check how many items would match the formula (live query)
                 # Wrapped in try/except because DB contention during active
                 # builds can cause this to fail
                 try:
-                    potential_matches = len(
-                        generator.generate_universal_catalog(cat, limit=5)
+                    cat_obj = (
+                        db.query(UniversalCategory)
+                        .filter(UniversalCategory.id == cat_info["id"])
+                        .first()
                     )
+                    if cat_obj:
+                        potential_matches = len(
+                            generator.generate_universal_catalog(cat_obj, limit=5)
+                        )
+                    else:
+                        potential_matches = -1
                 except Exception:
+                    db.rollback()
                     potential_matches = -1  # indicates query failed
                 category_details.append(
                     {
-                        "id": cat.id,
-                        "name": cat.name,
-                        "media_type": cat.media_type,
-                        "tag_formula": cat.tag_formula,
+                        "id": cat_info["id"],
+                        "name": cat_info["name"],
+                        "media_type": cat_info["media_type"],
+                        "tag_formula": cat_info["tag_formula"],
                         "pre_computed_items": content_count,
                         "potential_matches_sample": potential_matches,
                     }
@@ -727,7 +755,7 @@ def _admin_html() -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Admin - Stremio AI</title>
+<title>Admin - Curatio</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0d1117;color:#e6edf3;min-height:100vh}
@@ -849,7 +877,7 @@ tr:last-child td{border-bottom:none}
 <!-- Login Screen -->
 <div id="login-screen">
   <div class="login-box">
-    <h1>Stremio AI</h1>
+    <h1>Curatio</h1>
     <p>Admin Portal</p>
     <form id="login-form">
       <input type="password" id="login-password" placeholder="Master Password" autocomplete="current-password" autofocus>
@@ -862,7 +890,7 @@ tr:last-child td{border-bottom:none}
 <!-- Dashboard -->
 <div id="dashboard">
   <div class="topbar">
-    <h1>Stremio <span>AI</span> Admin</h1>
+    <h1><span>Curatio</span> Admin</h1>
     <div class="topbar-actions">
       <button onclick="loadAll()">Refresh</button>
       <button onclick="logout()">Sign Out</button>
@@ -954,7 +982,7 @@ tr:last-child td{border-bottom:none}
         <div class="card-row">
           <div class="form-group">
             <label>Addon Name</label>
-            <input type="text" id="set-ADDON_NAME" placeholder="AI Recommendations">
+            <input type="text" id="set-ADDON_NAME" placeholder="Curatio">
           </div>
           <div class="form-group">
             <label>Base URL</label>
@@ -963,8 +991,21 @@ tr:last-child td{border-bottom:none}
         </div>
         <div class="card-row">
           <div class="form-group">
-            <label>Catalog Size (items per catalog)</label>
-            <input type="number" id="set-CATALOG_SIZE" min="10" max="500" placeholder="100">
+            <label>Catalog Size (total items stored per catalog)</label>
+            <input type="number" id="set-CATALOG_SIZE" min="10" max="1000" placeholder="200">
+            <div class="hint">Total items generated into each catalog. Default: 200. Requires &ldquo;Regenerate Catalogs&rdquo; on the Build tab to take effect.</div>
+          </div>
+          <div class="form-group">
+            <label>Page Size (items per Stremio page)</label>
+            <input type="number" id="set-CATALOG_PAGE_SIZE" min="10" max="200" placeholder="100">
+            <div class="hint">Items returned per request. Default: 100</div>
+          </div>
+        </div>
+        <div class="card-row">
+          <div class="form-group">
+            <label>Shuffle Interval (hours)</label>
+            <input type="number" id="set-CATALOG_SHUFFLE_HOURS" min="0" max="168" placeholder="3">
+            <div class="hint">Randomize catalog order every N hours. 0 = disabled. Default: 3</div>
           </div>
           <div class="form-group">
             <label>Gemini Model</label>
@@ -1239,7 +1280,9 @@ async function loadSettings() {
     // App settings
     document.getElementById('set-ADDON_NAME').value = s.app.ADDON_NAME || '';
     document.getElementById('set-BASE_URL').value = s.app.BASE_URL || '';
-    document.getElementById('set-CATALOG_SIZE').value = s.app.CATALOG_SIZE || 100;
+    document.getElementById('set-CATALOG_SIZE').value = s.app.CATALOG_SIZE || 200;
+    document.getElementById('set-CATALOG_PAGE_SIZE').value = s.app.CATALOG_PAGE_SIZE || 100;
+    document.getElementById('set-CATALOG_SHUFFLE_HOURS').value = s.app.CATALOG_SHUFFLE_HOURS || 3;
     document.getElementById('set-GEMINI_MODEL').value = s.app.GEMINI_MODEL || '';
 
     // Features
@@ -1265,7 +1308,7 @@ async function saveSettings() {
   });
 
   // Always send text/number fields
-  const textFields = ['ADDON_NAME', 'BASE_URL', 'CATALOG_SIZE', 'GEMINI_MODEL'];
+  const textFields = ['ADDON_NAME', 'BASE_URL', 'CATALOG_SIZE', 'CATALOG_PAGE_SIZE', 'CATALOG_SHUFFLE_HOURS', 'GEMINI_MODEL'];
   textFields.forEach(k => {
     const v = document.getElementById('set-' + k).value.trim();
     if (v) data[k] = v;
