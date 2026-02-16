@@ -202,7 +202,7 @@ def auth_success_html(username: str, manifest_url: str, user_key: str) -> str:
     base_url = settings.base_url
     stremio_install = (
         f"stremio://{base_url.replace('https://', '').replace('http://', '')}"
-        f"/manifest/{user_key}.json"
+        f"/{user_key}/manifest.json"
     )
 
     return f"""<!DOCTYPE html>

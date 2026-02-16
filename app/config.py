@@ -171,9 +171,9 @@ def get_database_url() -> str:
 def get_stremio_manifest_url(user_key: Optional[str] = None) -> str:
     """Generate Stremio manifest URL."""
     if user_key:
-        return f"{settings.base_url}/manifest/{user_key}.json"
+        return f"{settings.base_url}/{user_key}/manifest.json"
     else:
-        return f"{settings.base_url}/manifest/universal.json"
+        return f"{settings.base_url}/manifest.json"
 
 
 def get_catalog_url(
@@ -182,7 +182,7 @@ def get_catalog_url(
     """Generate catalog URL for Stremio."""
     if user_key:
         return (
-            f"{settings.base_url}/catalog/{user_key}/{catalog_type}/{catalog_id}.json"
+            f"{settings.base_url}/{user_key}/catalog/{catalog_type}/{catalog_id}.json"
         )
     else:
         return f"{settings.base_url}/catalog/{catalog_type}/{catalog_id}.json"

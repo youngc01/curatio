@@ -311,10 +311,10 @@ def test_generate_universal_catalog(db):
 
 
 def test_root_endpoint(client):
-    """Test root endpoint."""
+    """Test root endpoint returns landing page HTML."""
     response = client.get("/")
     assert response.status_code == 200
-    assert "name" in response.json()
+    assert "AI" in response.text
 
 
 def test_health_check(client):
@@ -326,13 +326,21 @@ def test_health_check(client):
 
 def test_universal_manifest(client):
     """Test universal manifest endpoint."""
-    response = client.get("/manifest/universal.json")
+    response = client.get("/manifest.json")
     assert response.status_code == 200
 
     manifest = response.json()
     assert "id" in manifest
     assert "catalogs" in manifest
     assert isinstance(manifest["catalogs"], list)
+    assert manifest["idPrefixes"] == ["tmdb"]
+
+
+def test_legacy_manifest_redirect(client):
+    """Test that legacy /manifest/universal.json redirects to /manifest.json."""
+    response = client.get("/manifest/universal.json", follow_redirects=False)
+    assert response.status_code == 301
+    assert response.headers["location"] == "/manifest.json"
 
 
 def test_catalog_endpoint_not_found(client):

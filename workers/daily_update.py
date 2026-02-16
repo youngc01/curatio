@@ -110,7 +110,7 @@ async def tag_items_batch(
             # Tag with Gemini
             tagged_items = await gemini_engine.tag_items(gemini_items)
 
-            # Store tags
+            # Store tags using merge() for safe upsert
             for tagged_item in tagged_items:
                 tmdb_id = tagged_item["tmdb_id"]
                 tags = tagged_item.get("tags", {})
@@ -123,7 +123,7 @@ async def tag_items_batch(
                             confidence=confidence,
                             media_type=media_type,
                         )
-                        db.add(movie_tag)
+                        db.merge(movie_tag)
 
             db.commit()
             total_processed += len(batch)
@@ -131,6 +131,7 @@ async def tag_items_batch(
 
         except Exception as e:
             logger.error(f"Failed to tag batch: {e}")
+            db.rollback()
             total_failed += len(batch)
             continue
 
