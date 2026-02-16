@@ -274,6 +274,19 @@ class MediaMetadata(Base):
         return f"<MediaMetadata(tmdb_id={self.tmdb_id}, media_type='{self.media_type}', title='{self.title}')>"
 
 
+class AdminSetting(Base):
+    """Key-value store for admin-configurable settings that persist in the database."""
+
+    __tablename__ = "admin_settings"
+
+    key = Column(String(100), primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<AdminSetting(key='{self.key}')>"
+
+
 class TaggingJob(Base):
     """Track tagging jobs for monitoring and debugging."""
 
