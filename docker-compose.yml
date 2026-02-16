@@ -5,15 +5,15 @@ services:
     image: postgres:15-alpine
     container_name: curatio-postgres
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-curatio}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-stremio_ai}
+      POSTGRES_DB: ${POSTGRES_DB:-curatio}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-curatio}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -28,7 +28,7 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-stremio_ai}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-curatio}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-curatio}
       - DAILY_UPDATE_ENABLED=${DAILY_UPDATE_ENABLED:-false}
       - DAILY_UPDATE_TIME=${DAILY_UPDATE_TIME:-03:00}
     ports:
@@ -47,7 +47,7 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-stremio_ai}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-curatio}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-curatio}
     volumes:
       - ./app:/app/app
       - ./workers:/app/workers
