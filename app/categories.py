@@ -141,14 +141,22 @@ UNIVERSAL_CATEGORIES: list[dict[str, Any]] = [
         "name": "Totally '80s Action",
         "tier": 2,
         "media_type": "movie",
-        "formula": {"required": ["1980s", "Action"], "min_required": 2},
+        "formula": {
+            "mandatory": ["1980s"],
+            "required": ["Action"],
+            "min_required": 1,
+        },
     },
     {
         "id": "90s-comedies",
         "name": "'90s Comedies",
         "tier": 2,
         "media_type": "movie",
-        "formula": {"required": ["1990s", "Comedy"], "min_required": 2},
+        "formula": {
+            "mandatory": ["1990s"],
+            "required": ["Comedy"],
+            "min_required": 1,
+        },
     },
     {
         "id": "70s-thrillers",
@@ -156,8 +164,9 @@ UNIVERSAL_CATEGORIES: list[dict[str, Any]] = [
         "tier": 2,
         "media_type": "movie",
         "formula": {
-            "required": ["1970s", "Thriller", "Suspenseful"],
-            "min_required": 2,
+            "mandatory": ["1970s"],
+            "required": ["Thriller", "Suspenseful"],
+            "min_required": 1,
         },
     },
     {
@@ -165,14 +174,22 @@ UNIVERSAL_CATEGORIES: list[dict[str, Any]] = [
         "name": "Golden Age Film Noir",
         "tier": 2,
         "media_type": "movie",
-        "formula": {"required": ["1940s", "Crime", "Dark"], "min_required": 2},
+        "formula": {
+            "mandatory": ["1940s"],
+            "required": ["Crime", "Dark"],
+            "min_required": 1,
+        },
     },
     {
         "id": "modern-horror",
         "name": "Modern Horror (2010s & Beyond)",
         "tier": 2,
         "media_type": "movie",
-        "formula": {"required": ["2010s", "Horror"], "min_required": 2},
+        "formula": {
+            "mandatory": ["2010s"],
+            "required": ["Horror"],
+            "min_required": 1,
+        },
     },
     # Tier 3: Plot Elements (6)
     {
@@ -367,6 +384,7 @@ def seed_categories(db: Session) -> int:
     Returns the number of new categories created.
     """
     created = 0
+    updated = 0
     for i, cat_data in enumerate(UNIVERSAL_CATEGORIES):
         existing = (
             db.query(UniversalCategory)
@@ -374,7 +392,24 @@ def seed_categories(db: Session) -> int:
             .first()
         )
 
-        if not existing:
+        if existing:
+            # Sync formula, name, tier, and sort_order on every startup
+            changed = False
+            if existing.tag_formula != cat_data["formula"]:
+                existing.tag_formula = cat_data["formula"]
+                changed = True
+            if existing.name != cat_data["name"]:
+                existing.name = cat_data["name"]
+                changed = True
+            if existing.tier != cat_data["tier"]:
+                existing.tier = cat_data["tier"]
+                changed = True
+            if existing.sort_order != i + 1:
+                existing.sort_order = i + 1
+                changed = True
+            if changed:
+                updated += 1
+        else:
             category = UniversalCategory(
                 id=cat_data["id"],
                 name=cat_data["name"],
@@ -388,9 +423,11 @@ def seed_categories(db: Session) -> int:
 
     db.commit()
 
-    if created > 0:
-        logger.info(f"Seeded {created} universal categories")
+    if created or updated:
+        logger.info(
+            f"Categories: {created} created, {updated} updated"
+        )
     else:
-        logger.info("All 40 universal categories already exist")
+        logger.info("All 40 universal categories already up to date")
 
     return created
