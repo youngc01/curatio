@@ -7,6 +7,7 @@ This is the core AI component that analyzes media and generates Netflix-style ta
 from typing import List, Dict, Optional
 import asyncio
 import json
+import re
 import google.generativeai as genai
 from loguru import logger
 from tenacity import (
@@ -23,6 +24,32 @@ def _is_retryable_error(exception: BaseException) -> bool:
     """Check if an error is retryable (rate limit or server error)."""
     error_str = str(exception)
     return "429" in error_str or "Resource exhausted" in error_str or "503" in error_str
+
+
+def _salvage_truncated_json(text: str) -> Optional[List[Dict]]:
+    """
+    Extract valid items from a truncated Gemini JSON response.
+
+    When Gemini hits its output token limit, the JSON is cut off mid-stream.
+    This function extracts all complete items before the truncation point.
+
+    Returns:
+        List of valid tagged items, or None if nothing could be salvaged.
+    """
+    # Find all complete item blocks: {"tmdb_id": ..., "tags": {...}}
+    items = []
+    # Match complete item objects with their tags
+    pattern = r'\{\s*"tmdb_id"\s*:\s*(\d+)\s*,\s*"tags"\s*:\s*\{([^}]+)\}\s*\}'
+    for match in re.finditer(pattern, text):
+        try:
+            item_json = match.group(0)
+            item = json.loads(item_json)
+            if "tmdb_id" in item and "tags" in item and item["tags"]:
+                items.append(item)
+        except json.JSONDecodeError:
+            continue
+
+    return items if items else None
 
 
 class GeminiTaggingEngine:
@@ -238,8 +265,16 @@ Overview: {item.get('overview', 'No description available')[:500]}
             return tagged_items
 
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Gemini response as JSON: {e}")
-            logger.error(f"Response text: {response_text[:500]}")
+            logger.warning(f"Failed to parse Gemini response as JSON: {e}")
+            # Try to salvage complete items from truncated response
+            salvaged = _salvage_truncated_json(response_text)
+            if salvaged:
+                logger.info(
+                    f"Salvaged {len(salvaged)} items from truncated response "
+                    f"(out of {len(items)} requested)"
+                )
+                return salvaged
+            logger.error(f"Could not salvage any items. Response: {response_text[:500]}")
             raise
         except Exception as e:
             logger.error(f"Gemini tagging failed: {e}")
