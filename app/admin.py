@@ -40,6 +40,9 @@ SESSION_DURATION = timedelta(hours=24)
 _build_logs: collections.deque[str] = collections.deque(maxlen=2000)
 _build_log_sink_id: Optional[int] = None
 
+# ---- WebSocket clients for live build logs ----
+_ws_clients: set = set()
+
 
 def _start_log_capture():
     """Add a loguru sink that captures build-related log lines."""
@@ -768,10 +771,6 @@ async def get_build_logs(
         logs = logs[after:]
 
     return {"lines": logs, "total": total}
-
-
-# ---- WebSocket for live build logs ----
-_ws_clients: set = set()
 
 
 @router.websocket("/ws/build-logs")
