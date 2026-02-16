@@ -225,6 +225,8 @@ async def tag_items_batch(
     total_processed = 0
     total_failed = 0
 
+    consecutive_failures = 0
+
     for i in range(0, len(items_to_tag), batch_size):
         batch = items_to_tag[i : i + batch_size]
 
@@ -265,12 +267,30 @@ async def tag_items_batch(
             db.commit()
 
             total_processed += len(batch)
+            consecutive_failures = 0
             logger.info(f"Progress: {total_processed}/{len(items_to_tag)} items tagged")
+
+            # Pause between batches to avoid rate limiting
+            await asyncio.sleep(2)
 
         except Exception as e:
             logger.error(f"Failed to tag batch: {e}")
             db.rollback()
             total_failed += len(batch)
+            consecutive_failures += 1
+
+            # Back off increasingly on consecutive failures
+            if consecutive_failures >= 5:
+                backoff = min(300, 30 * consecutive_failures)
+                logger.warning(
+                    f"{consecutive_failures} consecutive failures, "
+                    f"backing off {backoff}s..."
+                )
+                await asyncio.sleep(backoff)
+            elif "429" in str(e) or "Resource exhausted" in str(e):
+                logger.warning("Rate limited, backing off 60s...")
+                await asyncio.sleep(60)
+
             continue
 
     logger.info(f"Tagging complete: {total_processed} succeeded, {total_failed} failed")

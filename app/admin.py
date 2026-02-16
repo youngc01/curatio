@@ -568,114 +568,124 @@ async def debug_catalogs(request: Request, _=Depends(verify_admin)):
     """Full diagnostic of the catalog pipeline to identify issues."""
     from app.catalog_generator import CatalogGenerator
 
-    with get_db() as db:
-        # Layer 1: Tags
-        tag_count = db.query(func.count(Tag.id)).scalar() or 0
+    try:
+        with get_db() as db:
+            # Layer 1: Tags
+            tag_count = db.query(func.count(Tag.id)).scalar() or 0
 
-        # Layer 2: MovieTags (tagged items)
-        movies_tagged = (
-            db.query(func.count(func.distinct(MovieTag.tmdb_id)))
-            .filter(MovieTag.media_type == "movie")
-            .scalar()
-            or 0
-        )
-        shows_tagged = (
-            db.query(func.count(func.distinct(MovieTag.tmdb_id)))
-            .filter(MovieTag.media_type == "tv")
-            .scalar()
-            or 0
-        )
-
-        # Layer 3: Metadata
-        metadata_count = db.query(func.count(MediaMetadata.tmdb_id)).scalar() or 0
-
-        # Layer 4: Universal categories
-        categories = (
-            db.query(UniversalCategory)
-            .filter(UniversalCategory.is_active.is_(True))
-            .order_by(UniversalCategory.sort_order)
-            .all()
-        )
-
-        # Layer 5: Pre-computed catalog content
-        total_catalog_items = (
-            db.query(func.count(UniversalCatalogContent.tmdb_id)).scalar() or 0
-        )
-
-        # Per-category breakdown
-        category_details = []
-        generator = CatalogGenerator(db)
-        for cat in categories:
-            content_count = (
-                db.query(func.count(UniversalCatalogContent.tmdb_id))
-                .filter(UniversalCatalogContent.category_id == cat.id)
+            # Layer 2: MovieTags (tagged items)
+            movies_tagged = (
+                db.query(func.count(func.distinct(MovieTag.tmdb_id)))
+                .filter(MovieTag.media_type == "movie")
                 .scalar()
                 or 0
             )
-            # Check how many items would match the formula (live query)
-            # Wrapped in try/except because DB contention during active
-            # builds can cause this to fail
-            try:
-                potential_matches = len(
-                    generator.generate_universal_catalog(cat, limit=5)
+            shows_tagged = (
+                db.query(func.count(func.distinct(MovieTag.tmdb_id)))
+                .filter(MovieTag.media_type == "tv")
+                .scalar()
+                or 0
+            )
+
+            # Layer 3: Metadata
+            metadata_count = db.query(func.count(MediaMetadata.tmdb_id)).scalar() or 0
+
+            # Layer 4: Universal categories
+            categories = (
+                db.query(UniversalCategory)
+                .filter(UniversalCategory.is_active.is_(True))
+                .order_by(UniversalCategory.sort_order)
+                .all()
+            )
+
+            # Layer 5: Pre-computed catalog content
+            total_catalog_items = (
+                db.query(func.count(UniversalCatalogContent.tmdb_id)).scalar() or 0
+            )
+
+            # Per-category breakdown
+            category_details = []
+            generator = CatalogGenerator(db)
+            for cat in categories:
+                try:
+                    content_count = (
+                        db.query(func.count(UniversalCatalogContent.tmdb_id))
+                        .filter(UniversalCatalogContent.category_id == cat.id)
+                        .scalar()
+                        or 0
+                    )
+                except Exception:
+                    content_count = -1
+                # Check how many items would match the formula (live query)
+                # Wrapped in try/except because DB contention during active
+                # builds can cause this to fail
+                try:
+                    potential_matches = len(
+                        generator.generate_universal_catalog(cat, limit=5)
+                    )
+                except Exception:
+                    potential_matches = -1  # indicates query failed
+                category_details.append(
+                    {
+                        "id": cat.id,
+                        "name": cat.name,
+                        "media_type": cat.media_type,
+                        "tag_formula": cat.tag_formula,
+                        "pre_computed_items": content_count,
+                        "potential_matches_sample": potential_matches,
+                    }
                 )
-            except Exception:
-                potential_matches = -1  # indicates query failed
-            category_details.append(
-                {
-                    "id": cat.id,
-                    "name": cat.name,
-                    "media_type": cat.media_type,
-                    "tag_formula": cat.tag_formula,
-                    "pre_computed_items": content_count,
-                    "potential_matches_sample": potential_matches,
-                }
+
+            # Layer 6: Last tagging job status
+            last_job = (
+                db.query(TaggingJob)
+                .order_by(TaggingJob.started_at.desc())
+                .first()
             )
 
-        # Layer 6: Last tagging job status
-        last_job = (
-            db.query(TaggingJob)
-            .order_by(TaggingJob.started_at.desc())
-            .first()
+            # Build diagnosis
+            issues = []
+            if tag_count == 0:
+                issues.append("No tags exist. Run initial build to create tags.")
+            if movies_tagged == 0 and shows_tagged == 0:
+                issues.append("No items have been tagged yet.")
+            if metadata_count == 0:
+                issues.append(
+                    "No metadata cached. Items won't show posters/titles in Stremio."
+                )
+            if len(categories) == 0:
+                issues.append("No active universal categories found.")
+            if total_catalog_items == 0 and (movies_tagged > 0 or shows_tagged > 0):
+                issues.append(
+                    "CRITICAL: Items are tagged but catalog content table is empty. "
+                    "The catalog generation step likely didn't run. "
+                    "Use 'Regenerate Catalogs' to fix this."
+                )
+
+        return {
+            "pipeline": {
+                "tags": tag_count,
+                "movies_tagged": movies_tagged,
+                "shows_tagged": shows_tagged,
+                "metadata_cached": metadata_count,
+                "active_categories": len(categories),
+                "pre_computed_catalog_items": total_catalog_items,
+            },
+            "categories": category_details,
+            "last_job": {
+                "type": last_job.job_type if last_job else None,
+                "status": last_job.status if last_job else None,
+                "error": (last_job.error_message or "")[:500] if last_job else None,
+            },
+            "issues": issues,
+            "healthy": len(issues) == 0,
+        }
+    except Exception as e:
+        logger.error(f"Diagnostic endpoint failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Diagnostic failed: {type(e).__name__}: {e}",
         )
-
-        # Build diagnosis
-        issues = []
-        if tag_count == 0:
-            issues.append("No tags exist. Run initial build to create tags.")
-        if movies_tagged == 0 and shows_tagged == 0:
-            issues.append("No items have been tagged yet.")
-        if metadata_count == 0:
-            issues.append(
-                "No metadata cached. Items won't show posters/titles in Stremio."
-            )
-        if len(categories) == 0:
-            issues.append("No active universal categories found.")
-        if total_catalog_items == 0 and (movies_tagged > 0 or shows_tagged > 0):
-            issues.append(
-                "CRITICAL: Items are tagged but catalog content table is empty. "
-                "The catalog generation step likely didn't run. "
-                "Use 'Regenerate Catalogs' to fix this."
-            )
-
-    return {
-        "pipeline": {
-            "tags": tag_count,
-            "movies_tagged": movies_tagged,
-            "shows_tagged": shows_tagged,
-            "metadata_cached": metadata_count,
-            "active_categories": len(categories),
-            "pre_computed_catalog_items": total_catalog_items,
-        },
-        "categories": category_details,
-        "last_job": {
-            "type": last_job.job_type if last_job else None,
-            "status": last_job.status if last_job else None,
-            "error": (last_job.error_message or "")[:500] if last_job else None,
-        },
-        "issues": issues,
-        "healthy": len(issues) == 0,
-    }
 
 
 @router.post("/api/catalogs/regenerate")
@@ -1464,7 +1474,7 @@ async function runDebug() {
 
     el.innerHTML = html;
   } catch (e) {
-    el.innerHTML = '<div class="alert alert-error">Diagnostic failed: ' + e.message + '</div>';
+    el.innerHTML = '<div class="alert alert-error">Diagnostic failed: ' + (e.message || 'Unknown error - check server logs') + '</div>';
   }
 }
 
