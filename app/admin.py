@@ -515,7 +515,7 @@ async def stop_build(request: Request, _=Depends(verify_admin)):
         raise HTTPException(404, "No build is currently running")
 
     # Cancel the asyncio task if it exists
-    if has_task:
+    if has_task and _active_build_task is not None:
         _active_build_task.cancel()
         try:
             await asyncio.wait_for(_active_build_task, timeout=5.0)
