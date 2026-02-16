@@ -281,6 +281,8 @@ async def get_settings(request: Request, _=Depends(verify_admin)):
             "ADDON_NAME": val("ADDON_NAME"),
             "BASE_URL": val("BASE_URL"),
             "CATALOG_SIZE": int(val("CATALOG_SIZE")),
+            "CATALOG_PAGE_SIZE": int(val("CATALOG_PAGE_SIZE")),
+            "CATALOG_SHUFFLE_HOURS": int(val("CATALOG_SHUFFLE_HOURS")),
             "GEMINI_MODEL": val("GEMINI_MODEL"),
         },
         "features": {
@@ -311,6 +313,8 @@ async def update_settings(request: Request, _=Depends(verify_admin)):
         "ADDON_NAME",
         "BASE_URL",
         "CATALOG_SIZE",
+        "CATALOG_PAGE_SIZE",
+        "CATALOG_SHUFFLE_HOURS",
         "GEMINI_MODEL",
         "MASTER_PASSWORD",
         "ENABLE_UNIVERSAL_CATALOGS",
@@ -862,7 +866,7 @@ tr:last-child td{border-bottom:none}
 <!-- Dashboard -->
 <div id="dashboard">
   <div class="topbar">
-    <h1>Stremio <span>AI</span> Admin</h1>
+    <h1><span>Curatio</span> Admin</h1>
     <div class="topbar-actions">
       <button onclick="loadAll()">Refresh</button>
       <button onclick="logout()">Sign Out</button>
@@ -963,8 +967,21 @@ tr:last-child td{border-bottom:none}
         </div>
         <div class="card-row">
           <div class="form-group">
-            <label>Catalog Size (items per catalog)</label>
-            <input type="number" id="set-CATALOG_SIZE" min="10" max="500" placeholder="100">
+            <label>Catalog Size (total items stored per catalog)</label>
+            <input type="number" id="set-CATALOG_SIZE" min="10" max="500" placeholder="200">
+            <div class="hint">Total items generated into each catalog. Default: 200</div>
+          </div>
+          <div class="form-group">
+            <label>Page Size (items per Stremio page)</label>
+            <input type="number" id="set-CATALOG_PAGE_SIZE" min="10" max="200" placeholder="100">
+            <div class="hint">Items returned per request. Default: 100</div>
+          </div>
+        </div>
+        <div class="card-row">
+          <div class="form-group">
+            <label>Shuffle Interval (hours)</label>
+            <input type="number" id="set-CATALOG_SHUFFLE_HOURS" min="0" max="168" placeholder="3">
+            <div class="hint">Randomize catalog order every N hours. 0 = disabled. Default: 3</div>
           </div>
           <div class="form-group">
             <label>Gemini Model</label>
@@ -1239,7 +1256,9 @@ async function loadSettings() {
     // App settings
     document.getElementById('set-ADDON_NAME').value = s.app.ADDON_NAME || '';
     document.getElementById('set-BASE_URL').value = s.app.BASE_URL || '';
-    document.getElementById('set-CATALOG_SIZE').value = s.app.CATALOG_SIZE || 100;
+    document.getElementById('set-CATALOG_SIZE').value = s.app.CATALOG_SIZE || 200;
+    document.getElementById('set-CATALOG_PAGE_SIZE').value = s.app.CATALOG_PAGE_SIZE || 100;
+    document.getElementById('set-CATALOG_SHUFFLE_HOURS').value = s.app.CATALOG_SHUFFLE_HOURS || 3;
     document.getElementById('set-GEMINI_MODEL').value = s.app.GEMINI_MODEL || '';
 
     // Features
@@ -1265,7 +1284,7 @@ async function saveSettings() {
   });
 
   // Always send text/number fields
-  const textFields = ['ADDON_NAME', 'BASE_URL', 'CATALOG_SIZE', 'GEMINI_MODEL'];
+  const textFields = ['ADDON_NAME', 'BASE_URL', 'CATALOG_SIZE', 'CATALOG_PAGE_SIZE', 'CATALOG_SHUFFLE_HOURS', 'GEMINI_MODEL'];
   textFields.forEach(k => {
     const v = document.getElementById('set-' + k).value.trim();
     if (v) data[k] = v;

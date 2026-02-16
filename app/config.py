@@ -38,7 +38,11 @@ class Settings(BaseSettings):
     addon_name: str = Field("Curatio", description="Addon name in Stremio")
 
     # Catalog Settings
-    catalog_size: int = Field(100, description="Number of items per catalog")
+    catalog_size: int = Field(200, description="Number of items per catalog")
+    catalog_page_size: int = Field(100, description="Items returned per Stremio page")
+    catalog_shuffle_hours: int = Field(
+        3, description="Reshuffle catalog order every N hours (0 to disable)"
+    )
     universal_catalog_refresh_hours: int = Field(
         24, description="Hours between universal catalog refreshes"
     )
