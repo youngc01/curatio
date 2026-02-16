@@ -139,13 +139,13 @@ async def create_tags(db: Session):
     logger.info(f"Created {created_count} new tags")
 
 
-async def fetch_popular_items(media_type: MediaType, limit: int):
-    """Fetch popular movies or TV shows from TMDB."""
-    logger.info(f"Fetching {limit} popular {media_type} items from TMDB...")
+async def fetch_items(media_type: MediaType, limit: int):
+    """Fetch movies or TV shows from TMDB using multi-strategy discovery."""
+    logger.info(f"Fetching up to {limit} {media_type} items from TMDB...")
 
-    items = await tmdb_client.get_popular_items(media_type, limit=limit)
+    items = await tmdb_client.fetch_all_items(media_type, limit=limit)
 
-    logger.info(f"Fetched {len(items)} {media_type} items")
+    logger.info(f"Fetched {len(items)} unique {media_type} items")
     return items
 
 
@@ -361,14 +361,14 @@ async def main(movies_limit: int, shows_limit: int):
             await create_universal_categories(db)
 
             # Step 3: Fetch movies
-            movies = await fetch_popular_items("movie", movies_limit)
+            movies = await fetch_items("movie", movies_limit)
             await store_metadata(db, movies, "movie")
 
             # Step 4: Tag movies
             movies_processed, movies_failed = await tag_items_batch(db, movies, "movie")
 
             # Step 5: Fetch TV shows
-            shows = await fetch_popular_items("tv", shows_limit)
+            shows = await fetch_items("tv", shows_limit)
             await store_metadata(db, shows, "tv")
 
             # Step 6: Tag TV shows
@@ -394,8 +394,8 @@ async def main(movies_limit: int, shows_limit: int):
             logger.info("=" * 80)
             logger.info("BUILD COMPLETE!")
             logger.info("=" * 80)
-            logger.info(f"Movies processed: {movies_processed} / {movies_limit}")
-            logger.info(f"Shows processed: {shows_processed} / {shows_limit}")
+            logger.info(f"Movies fetched: {len(movies)}, tagged: {movies_processed}")
+            logger.info(f"Shows fetched: {len(shows)}, tagged: {shows_processed}")
             logger.info(f"Total items: {movies_processed + shows_processed}")
             logger.info(f"Failed: {movies_failed + shows_failed}")
             logger.info(f"Duration: {duration:.1f} hours")
