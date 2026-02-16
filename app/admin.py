@@ -493,20 +493,36 @@ def _mark_running_jobs_cancelled():
 
 @router.post("/api/build/stop")
 async def stop_build(request: Request, _=Depends(verify_admin)):
-    """Cancel the currently running build task."""
+    """Cancel the currently running build task.
+
+    Handles two scenarios:
+    1. Normal: asyncio task is alive -> cancel it
+    2. Orphaned: DB says running but task ref is gone (e.g. after server restart
+       or code redeploy) -> just mark DB jobs as cancelled
+    """
     global _active_build_task
 
-    if not _active_build_task or _active_build_task.done():
+    has_task = _active_build_task is not None and not _active_build_task.done()
+
+    # Check DB for running jobs even if task ref is gone
+    with get_db() as db:
+        has_db_job = (
+            db.query(TaggingJob).filter(TaggingJob.status == "running").first()
+            is not None
+        )
+
+    if not has_task and not has_db_job:
         raise HTTPException(404, "No build is currently running")
 
-    _active_build_task.cancel()
-    # Wait briefly for the task to finish its cancellation handler
-    try:
-        await asyncio.wait_for(_active_build_task, timeout=5.0)
-    except (asyncio.CancelledError, asyncio.TimeoutError):
-        pass
+    # Cancel the asyncio task if it exists
+    if has_task:
+        _active_build_task.cancel()
+        try:
+            await asyncio.wait_for(_active_build_task, timeout=5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
 
-    # If the task didn't mark the jobs itself, do it here as a safety net
+    # Mark DB jobs as cancelled (safety net for both scenarios)
     _mark_running_jobs_cancelled()
     _stop_log_capture()
     _active_build_task = None
@@ -526,7 +542,18 @@ async def get_build_logs(
 
     Query param 'after' returns only lines after that index,
     so the UI can poll incrementally without re-fetching everything.
+    Auto-starts log capture if a build is running but capture isn't active
+    (e.g. build started before code was deployed).
     """
+    # Auto-start capture for builds that started before this code was deployed
+    if _build_log_sink_id is None:
+        with get_db() as db:
+            running = (
+                db.query(TaggingJob).filter(TaggingJob.status == "running").first()
+            )
+        if running:
+            _start_log_capture()
+
     logs = list(_build_logs)
     total = len(logs)
 
@@ -586,7 +613,14 @@ async def debug_catalogs(request: Request, _=Depends(verify_admin)):
                 or 0
             )
             # Check how many items would match the formula (live query)
-            potential_matches = len(generator.generate_universal_catalog(cat, limit=5))
+            # Wrapped in try/except because DB contention during active
+            # builds can cause this to fail
+            try:
+                potential_matches = len(
+                    generator.generate_universal_catalog(cat, limit=5)
+                )
+            except Exception:
+                potential_matches = -1  # indicates query failed
             category_details.append(
                 {
                     "id": cat.id,
