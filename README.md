@@ -1,371 +1,287 @@
-# Stremio AI Recommendations Addon
+<p align="center">
+  <img src="assets/logo.svg" alt="Curatio" width="200">
+</p>
 
-Netflix-style AI-powered content discovery for Stremio using Gemini AI.
+<h1 align="center">Curatio</h1>
+<p align="center"><strong>AI-curated cinema for Stremio</strong></p>
+
+<p align="center">
+  Netflix-style content discovery powered by Gemini AI.<br>
+  40 curated catalogs. 150,000 tagged titles. $5 one-time, then free forever.
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick Start</a> &middot;
+  <a href="#features">Features</a> &middot;
+  <a href="#how-it-works">How It Works</a> &middot;
+  <a href="#categories">Categories</a> &middot;
+  <a href="#admin-dashboard">Admin Dashboard</a> &middot;
+  <a href="#api-reference">API</a>
+</p>
+
+---
 
 ## Features
 
-✅ **40 Universal Categories** - Netflix-style semantic categories (no Trakt required)  
-✅ **10 Personalized Categories** - AI-powered recommendations based on your Trakt history  
-✅ **Gemini AI Tagging** - Semantic understanding of movies and TV shows  
-✅ **One-Time $5 Build** - Tag 150,000 titles once, then free forever  
-✅ **PostgreSQL Storage** - Fast catalog generation via SQL (no API calls)  
-✅ **Multi-User Support** - Each user gets personalized recommendations  
-✅ **Master Password** - Gate access to prevent abuse  
+- **40 Universal Catalogs** -- Netflix-style semantic categories (Dark Crime Dramas, Cyberpunk Futures, Feel-Good Comedies, etc.)
+- **10 Personalized Catalogs** -- AI recommendations based on your Trakt watch history
+- **Gemini AI Tagging** -- Every title semantically tagged across mood, genre, era, and style
+- **One-Time $5 Build** -- Tag 150,000 titles once, then serve catalogs at $0/month
+- **Admin Dashboard** -- Web UI to manage builds, monitor status, and configure settings
+- **Daily Auto-Updates** -- Built-in scheduler fetches and tags new releases automatically
+- **Multi-User Support** -- Each Trakt user gets personalized recommendations
+- **Master Password** -- Gate access to prevent unauthorized usage
 
-## Architecture
+## How It Works
 
 ```
-User → Stremio → FastAPI → PostgreSQL (tag database) → TMDB metadata
-                     ↓
-                 Gemini AI (tagging only)
-                     ↓
-                 Trakt (watch history)
+User -> Stremio -> Curatio (FastAPI) -> PostgreSQL (tag database) -> TMDB metadata
+                         |
+                     Gemini AI (tagging only, one-time + daily updates)
+                         |
+                     Trakt (watch history for personalization)
 ```
 
-**Key Innovation**: Gemini tags movies once → stored in PostgreSQL → catalogs generated via SQL → $0/month forever
+**The key insight**: Gemini tags every movie/show once and stores the results in PostgreSQL. After that, all catalog generation is pure SQL -- no AI calls during browsing. This keeps ongoing costs at $0.
 
 ## Quick Start
 
 ### Prerequisites
 
-- Docker & Docker Compose
-- TMDB API key (free): https://www.themoviedb.org/settings/api
-- Gemini API key (free): https://aistudio.google.com/app/apikey
-- Trakt OAuth app: https://trakt.tv/oauth/applications/new
+| Service | Cost | Link |
+|---------|------|------|
+| Docker & Docker Compose | Free | [docs.docker.com](https://docs.docker.com/get-docker/) |
+| TMDB API key | Free | [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) |
+| Gemini API key | Free + $5 one-time | [aistudio.google.com](https://aistudio.google.com/app/apikey) |
+| Trakt OAuth app | Free | [trakt.tv/oauth/applications/new](https://trakt.tv/oauth/applications/new) |
 
-### 1. Clone Repository
-
-```bash
-git clone https://github.com/yourusername/stremio-ai-addon.git
-cd stremio-ai-addon
-```
-
-### 2. Configure Environment
+### 1. Clone and Configure
 
 ```bash
+git clone https://github.com/yourusername/curatio.git
+cd curatio
 cp .env.example .env
-nano .env
 ```
 
-Fill in your API keys:
+Edit `.env` with your API keys:
+
 ```env
-TMDB_API_KEY=your_key_here
-GEMINI_API_KEY=your_key_here
-TRAKT_CLIENT_ID=your_id_here
-TRAKT_CLIENT_SECRET=your_secret_here
+TMDB_API_KEY=your_key
+GEMINI_API_KEY=your_key
+TRAKT_CLIENT_ID=your_id
+TRAKT_CLIENT_SECRET=your_secret
 TRAKT_REDIRECT_URI=https://yourdomain.com/auth/trakt/callback
 MASTER_PASSWORD=your_strong_password
 BASE_URL=https://yourdomain.com
 SECRET_KEY=generate_random_32_char_string
 ```
 
-### 3. Initial Database Build ($5 One-Time)
-
-**This tags 100,000 movies + 50,000 TV shows in ~3 hours for $5.**
-
+Generate a secret key:
 ```bash
-# Enable Gemini paid tier in .env
-GEMINI_PAID_TIER=true
-
-# Run initial tagging job
-docker-compose run --rm worker python workers/initial_build.py
-
-# This will:
-# - Fetch 150,000 titles from TMDB
-# - Tag them with Gemini AI
-# - Store tags in PostgreSQL
-# - Generate all 40 universal catalogs
-# - Cost: ~$5 total
-# - Time: ~3 hours
-
-# After completion, disable paid tier
-GEMINI_PAID_TIER=false
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-### 4. Start the Addon
+### 2. Initial Build (~$5, ~3 hours)
+
+This tags 150,000 titles with Gemini AI. You only do this once.
+
+```bash
+# Start database
+docker-compose up -d postgres
+
+# Run the tagging build (enable paid tier in .env: GEMINI_PAID_TIER=true)
+docker-compose --profile workers run --rm worker python workers/initial_build.py
+
+# After completion, set GEMINI_PAID_TIER=false in .env
+```
+
+### 3. Start Curatio
 
 ```bash
 docker-compose up -d
-
-# Check logs
-docker-compose logs -f app
-
-# Check health
 curl http://localhost:8000/health
+# {"status":"healthy","database":"connected","version":"1.0.0"}
 ```
 
-### 5. Install in Stremio
+### 4. Install in Stremio
 
-**Option A: Universal (No Trakt)**
+**Universal (no account needed):**
 ```
-https://yourdomain.com/manifest/universal.json
+https://yourdomain.com/manifest.json
 ```
 
-**Option B: Personalized (With Trakt)**
-1. Visit: `https://yourdomain.com/auth/start?password=your_master_password`
-2. Sign in with Trakt
-3. Copy your personal manifest URL
-4. Install in Stremio
+**Personalized (with Trakt):**
+1. Visit `https://yourdomain.com` and connect your Trakt account
+2. Copy your personal manifest URL
+3. Install in Stremio
 
-## Ongoing Maintenance (Free Forever)
+### 5. Enable Daily Updates
 
-### Daily Updates (Built-In Scheduler)
-
-Enable the in-app daily update scheduler — no cron needed:
+Add to `.env` and restart:
 
 ```env
-# In your .env file
 DAILY_UPDATE_ENABLED=true
-DAILY_UPDATE_TIME=03:00  # HH:MM in UTC
+DAILY_UPDATE_TIME=03:00
 ```
 
-The scheduler runs inside the app process and automatically:
-- Fetches new releases from TMDB daily
-- Tags them with Gemini AI
-- Regenerates all universal catalogs
-- Cost: $0 (within free tier)
-- Time: ~5 minutes per run
+New releases are fetched, tagged, and added to catalogs automatically. Stays within Gemini's free tier.
 
-**Manual fallback:**
-```bash
-docker-compose run --rm worker python workers/daily_update.py
+## Categories
+
+### Universal Catalogs (40 total)
+
+Curatio ships with 40 hand-designed categories spanning five tiers:
+
+| Tier | Focus | Examples |
+|------|-------|---------|
+| **Genre + Mood** (15) | Emotional tone | Dark & Gritty Crime Dramas, Feel-Good Comedies, Mind-Bending Sci-Fi |
+| **Era + Genre** (5) | Time period | Totally '80s Action, '90s Comedies, Golden Age Film Noir |
+| **Plot Elements** (6) | Story type | Heist & Caper Films, Time Travel Mind-Benders, Coming-of-Age |
+| **Style + Character** (9) | Cinematic style | Neo-Noir Cinema, Cyberpunk Futures, Anti-Hero Sagas |
+| **Special Collections** (5) | Curated sets | Conspiracy & Paranoia, Lavish Period Dramas, Whodunit Mysteries |
+
+Each catalog contains ~100 titles ranked by AI relevance.
+
+### Personalized Catalogs (10 per user)
+
+When connected to Trakt, users get catalogs like:
+- Top Picks for You
+- Because You Watched [Movie]
+- Hidden Gems We Think You'll Love
+- Trending in Your Taste
+
+## Admin Dashboard
+
+Curatio includes a web-based admin dashboard at `/admin`:
+
+- **Build Management** -- Trigger and monitor tagging builds with real-time logs
+- **Database Stats** -- View tagged title counts, catalog sizes, and user metrics
+- **Settings** -- Configure catalog sizes, refresh intervals, and feature flags
+- **User Management** -- View connected Trakt users and their catalog status
+
+## Architecture
+
 ```
-
-## Project Structure
-
-```
-stremio-ai-addon/
+curatio/
 ├── app/
-│   ├── main.py              # FastAPI application
-│   ├── models.py            # Database models
-│   ├── config.py            # Configuration
-│   ├── database.py          # Database connection
-│   ├── tmdb_client.py       # TMDB API client
-│   ├── gemini_client.py     # Gemini AI tagging
-│   ├── trakt_client.py      # Trakt OAuth
-│   └── catalog_generator.py # Catalog builder
+│   ├── main.py              # FastAPI app, Stremio manifest & catalog endpoints
+│   ├── admin.py             # Admin dashboard & build management
+│   ├── models.py            # SQLAlchemy models (10 tables)
+│   ├── config.py            # Pydantic settings from environment
+│   ├── database.py          # PostgreSQL connection & pooling
+│   ├── tmdb_client.py       # TMDB API client with retry logic
+│   ├── gemini_client.py     # Gemini AI tagging engine
+│   ├── trakt_client.py      # Trakt OAuth & watch history
+│   ├── catalog_generator.py # SQL-based catalog builder
+│   ├── categories.py        # 40 universal category definitions
+│   ├── landing.py           # HTML landing & auth pages
+│   └── scheduler.py         # Daily update scheduler
 ├── workers/
-│   ├── initial_build.py     # One-time $5 build
-│   └── daily_update.py      # Free daily updates
+│   ├── initial_build.py     # One-time full tagging build
+│   └── daily_update.py      # Daily new-release tagger
 ├── tests/
-│   ├── test_tagging.py      # Gemini tests
-│   ├── test_catalogs.py     # Catalog tests
-│   └── test_api.py          # API tests
-├── docker-compose.yml       # Full stack
-├── Dockerfile               # App container
-├── requirements.txt         # Python deps
-└── .env.example             # Config template
+│   └── test_all.py          # Unit, integration & performance tests
+├── assets/
+│   └── logo.svg             # Curatio logo
+├── .github/workflows/
+│   └── build.yml            # CI/CD: test, lint, build, deploy
+├── docker-compose.yml
+├── Dockerfile
+├── requirements.txt
+└── .env.example
 ```
 
 ## Cost Breakdown
 
-### One-Time Initial Build
-- **Movies**: 100,000 × 250 tokens = 25M tokens = **$3.00**
-- **TV Shows**: 50,000 × 250 tokens = 12.5M tokens = **$1.69**
-- **Total**: **~$5**
+| Phase | What | Cost | Time |
+|-------|------|------|------|
+| Initial build | Tag 150K titles with Gemini | ~$5 | ~3 hours |
+| Ongoing | Daily new releases (~50-100/day) | $0 (free tier) | ~5 min/day |
+| Hosting | Self-hosted via Docker | $0 | -- |
 
-### Monthly Ongoing (Free Tier)
-- Weekly new releases: 400 movies + 120 shows/month
-- Gemini requests: ~11/month
-- Within free tier: 1,500 requests/day
-- **Cost: $0/month**
+**Total first year: $5. Every year after: $0.**
 
-## Category Examples
+## Performance
 
-### Universal Categories (40 total)
+| Metric | Value |
+|--------|-------|
+| Catalog query | <100ms |
+| API response | <200ms |
+| Concurrent users | 5,000+ |
+| Database size | ~500MB |
+| Memory usage | ~300MB |
 
-**Genre + Mood** (15 categories)
-- Dark & Gritty Crime Dramas
-- Feel-Good Comedies
-- Mind-Bending Sci-Fi Thrillers
-- High-Octane Action
-- Lighthearted Romance
+## API Reference
 
-**Era + Genre** (5 categories)
-- Totally '80s Action
-- '90s Comedies
-- Golden Age Film Noir
+### Stremio Endpoints
 
-**Plot Elements** (6 categories)
-- Heist & Caper Films
-- Time Travel Mind-Benders
-- Coming-of-Age Stories
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/manifest.json` | Universal manifest (40 catalogs) |
+| `GET` | `/{user_key}/manifest.json` | Personalized manifest (50 catalogs) |
+| `GET` | `/catalog/{type}/{id}.json` | Universal catalog content |
+| `GET` | `/{user_key}/catalog/{type}/{id}.json` | Personalized catalog content |
 
-**Style + Character** (9 categories)
-- Neo-Noir Cinema
-- Cyberpunk Futures
-- Anti-Hero Sagas
-- Powerful Women on Screen
+### Auth & Admin
 
-**Special Collections** (5 categories)
-- Conspiracy & Paranoia
-- Lavish Period Dramas
-- Whodunit Detective Mysteries
-
-### Personalized Categories (10 per user)
-
-- Top Picks for [Name]
-- Because You Watched Blade Runner 2049
-- More Like The Matrix
-- Your Rewatch Favorites
-- Continue Watching
-- Hidden Gems We Think You'll Love
-- Recently Added For You
-- Trending in Your Taste
-
-## API Endpoints
-
-### Stremio Manifest
-- `GET /manifest/universal.json` - Universal catalogs
-- `GET /manifest/{user_key}.json` - Personalized catalogs
-
-### Catalogs
-- `GET /catalog/{type}/{id}.json` - Universal catalog
-- `GET /catalog/{user_key}/{type}/{id}.json` - Personal catalog
-
-### OAuth
-- `GET /auth/start?password=xxx` - Start Trakt auth
-- `GET /auth/trakt/callback` - OAuth callback
-
-### Health
-- `GET /health` - Health check
-- `GET /` - Addon info
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | Landing page |
+| `GET` | `/auth/start?password=xxx` | Start Trakt OAuth |
+| `GET` | `/auth/trakt/callback` | OAuth callback |
+| `GET` | `/admin` | Admin dashboard |
+| `GET` | `/health` | Health check |
 
 ## Development
 
 ### Run Tests
 
 ```bash
-# All tests
-docker-compose run --rm app pytest
-
-# Specific test
-docker-compose run --rm app pytest tests/test_tagging.py
-
-# With coverage
-docker-compose run --rm app pytest --cov=app
+pytest tests/ -v --cov=app --cov-report=term
 ```
 
 ### Local Development
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
-
-# Run database migrations
-alembic upgrade head
-
-# Start FastAPI dev server
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### Adding New Categories
+### Linting
 
-1. Define category in code:
-```python
-{
-    "id": "cyberpunk-noir",
-    "name": "Neon-Soaked Cyberpunk Noir",
-    "tag_formula": {
-        "required": ["Cyberpunk", "Neo-Noir"],
-        "optional": ["Neon Visuals"],
-        "min_required": 2
-    }
-}
-```
-
-2. Add to database:
-```python
-category = UniversalCategory(
-    id="cyberpunk-noir",
-    name="Neon-Soaked Cyberpunk Noir",
-    tier=1,
-    sort_order=5,
-    media_type="movie",
-    tag_formula=tag_formula
-)
-db.add(category)
-db.commit()
-```
-
-3. Generate catalog:
 ```bash
-docker-compose run --rm app python -c "from app.catalog_generator import CatalogGenerator; from app.database import get_db; with get_db() as db: CatalogGenerator(db).regenerate_all_universal_catalogs()"
+black app/ workers/ tests/
+ruff check app/ workers/ tests/
+mypy app/ --ignore-missing-imports
+```
+
+### Docker Build
+
+```bash
+docker build -t curatio .
+docker run -p 8000:8000 --env-file .env curatio
 ```
 
 ## Troubleshooting
 
-### Gemini API Errors
-```
-Error: Rate limit exceeded
-Solution: You're within free tier. Wait 1 minute and retry.
-```
+| Problem | Solution |
+|---------|----------|
+| Empty catalogs | Run the initial build first |
+| Gemini rate limit | Wait 1 minute (free tier: 1,500 req/day) |
+| Database connection failed | Check PostgreSQL: `docker-compose up -d postgres` |
+| Trakt OAuth redirect mismatch | Ensure `TRAKT_REDIRECT_URI` matches your Trakt app settings exactly |
+| Configuration errors | Verify all keys in `.env` have real values, not placeholders |
 
-### Database Connection Failed
-```
-Error: could not connect to server
-Solution: Ensure PostgreSQL is running: docker-compose up -d postgres
-```
+## Tech Stack
 
-### Trakt OAuth Failed
-```
-Error: redirect_uri mismatch
-Solution: Check TRAKT_REDIRECT_URI matches your Trakt app settings
-```
-
-### Empty Catalogs
-```
-Issue: Catalogs show no items
-Solution: Run initial build first: docker-compose run --rm worker python workers/initial_build.py
-```
-
-## Performance
-
-### Database Size
-- 150,000 titles × 50 tags = 7.5M rows
-- Total storage: ~500 MB
-- Query time: <100ms per catalog
-
-### API Response Times
-- Manifest: <50ms
-- Catalog (100 items): <100ms
-- Health check: <10ms
-
-### Scalability
-- Supports 5,000+ concurrent users
-- PostgreSQL handles all catalog queries
-- No Gemini calls during user browsing (only during daily updates)
-
-## Security
-
-- Master password required for user signup
-- Trakt OAuth for user authentication
-- JWT tokens for API access
-- Rate limiting: 60 requests/minute per user
-- No sensitive data logged
+- **[FastAPI](https://fastapi.tiangolo.com/)** -- Async Python web framework
+- **[PostgreSQL](https://www.postgresql.org/)** -- Tag database & catalog storage
+- **[Google Gemini](https://ai.google.dev/)** -- AI-powered semantic tagging
+- **[TMDB](https://www.themoviedb.org/)** -- Movie & TV metadata
+- **[Trakt](https://trakt.tv/)** -- Watch history & personalization
+- **[Docker](https://www.docker.com/)** -- Containerized deployment
+- **[GitHub Actions](https://github.com/features/actions)** -- CI/CD pipeline
 
 ## License
 
-MIT License - see LICENSE file
-
-## Support
-
-- Issues: https://github.com/yourusername/stremio-ai-addon/issues
-- Discussions: https://github.com/yourusername/stremio-ai-addon/discussions
-
-## Credits
-
-- TMDB for movie/TV metadata
-- Google Gemini for AI tagging
-- Trakt for watch history
-- Stremio for the addon platform
-
-## Changelog
-
-### v1.0.0 (2025-01-01)
-- Initial release
-- 40 universal categories
-- 10 personalized categories per user
-- Gemini AI tagging
-- PostgreSQL storage
-- Docker deployment
+MIT

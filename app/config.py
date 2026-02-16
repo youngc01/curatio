@@ -35,7 +35,7 @@ class Settings(BaseSettings):
 
     # Application
     base_url: str = Field(..., description="Base URL where addon is hosted")
-    addon_name: str = Field("AI Recommendations", description="Addon name in Stremio")
+    addon_name: str = Field("Curatio", description="Addon name in Stremio")
 
     # Catalog Settings
     catalog_size: int = Field(100, description="Number of items per catalog")

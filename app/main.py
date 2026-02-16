@@ -1,5 +1,5 @@
 """
-Main FastAPI application for Stremio AI Addon.
+Main FastAPI application for Curatio.
 
 Provides Stremio manifest and catalog endpoints.
 """
@@ -33,8 +33,8 @@ def _stremio_type(media_type: str) -> str:
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Stremio AI Recommendations",
-    description="Netflix-style AI-powered content discovery for Stremio",
+    title="Curatio",
+    description="AI-curated cinema for Stremio",
     version="1.0.0",
 )
 
@@ -54,7 +54,7 @@ app.include_router(admin_router)
 @app.on_event("startup")
 async def startup_event():
     """Initialize application on startup."""
-    logger.info("Starting Stremio AI Addon...")
+    logger.info("Starting Curatio...")
 
     # Validate configuration
     try:
@@ -92,7 +92,7 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown."""
-    logger.info("Shutting down Stremio AI Addon...")
+    logger.info("Shutting down Curatio...")
 
     # Cancel scheduler if running
     if getattr(app.state, "scheduler_task", None) is not None:

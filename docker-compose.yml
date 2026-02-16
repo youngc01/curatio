@@ -3,7 +3,7 @@ version: '3.8'
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: stremio-ai-postgres
+    container_name: curatio-postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
@@ -21,7 +21,7 @@ services:
 
   app:
     build: .
-    container_name: stremio-ai-app
+    container_name: curatio-app
     depends_on:
       postgres:
         condition: service_healthy
@@ -40,7 +40,7 @@ services:
 
   worker:
     build: .
-    container_name: stremio-ai-worker
+    container_name: curatio-worker
     depends_on:
       postgres:
         condition: service_healthy
@@ -60,4 +60,4 @@ volumes:
 
 networks:
   default:
-    name: stremio-ai-network
+    name: curatio-network

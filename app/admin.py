@@ -1,5 +1,5 @@
 """
-Admin portal for Stremio AI Addon.
+Admin portal for Curatio.
 
 Provides a web dashboard to manage settings, trigger builds, and monitor status.
 Protected by master password authentication.
@@ -727,7 +727,7 @@ def _admin_html() -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Admin - Stremio AI</title>
+<title>Admin - Curatio</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0d1117;color:#e6edf3;min-height:100vh}
@@ -849,7 +849,7 @@ tr:last-child td{border-bottom:none}
 <!-- Login Screen -->
 <div id="login-screen">
   <div class="login-box">
-    <h1>Stremio AI</h1>
+    <h1>Curatio</h1>
     <p>Admin Portal</p>
     <form id="login-form">
       <input type="password" id="login-password" placeholder="Master Password" autocomplete="current-password" autofocus>
@@ -954,7 +954,7 @@ tr:last-child td{border-bottom:none}
         <div class="card-row">
           <div class="form-group">
             <label>Addon Name</label>
-            <input type="text" id="set-ADDON_NAME" placeholder="AI Recommendations">
+            <input type="text" id="set-ADDON_NAME" placeholder="Curatio">
           </div>
           <div class="form-group">
             <label>Base URL</label>

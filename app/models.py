@@ -1,5 +1,5 @@
 """
-Database models for Stremio AI Addon.
+Database models for Curatio.
 
 This module defines all database tables using SQLAlchemy ORM.
 """
