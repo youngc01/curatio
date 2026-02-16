@@ -20,6 +20,14 @@ from app.models import User, UniversalCategory, UserCatalog
 from app.catalog_generator import CatalogGenerator
 from app.trakt_client import trakt_client
 
+
+def _stremio_type(media_type: str) -> str:
+    """Map internal media types to Stremio-compatible types.
+
+    TMDB uses 'tv' but Stremio expects 'series'.
+    """
+    return "series" if media_type == "tv" else media_type
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Stremio AI Recommendations",
@@ -133,7 +141,7 @@ async def universal_manifest(db: Session = Depends(get_db_dependency)):
             {
                 "id": category.id,
                 "name": category.name,
-                "type": category.media_type,
+                "type": _stremio_type(category.media_type),
                 "extra": [{"name": "skip", "isRequired": False}],
             }
         )
@@ -193,7 +201,7 @@ async def personalized_manifest(
             {
                 "id": f"universal-{category.id}",
                 "name": category.name,
-                "type": category.media_type,
+                "type": _stremio_type(category.media_type),
                 "extra": [{"name": "skip", "isRequired": False}],
             }
         )
@@ -204,7 +212,7 @@ async def personalized_manifest(
             {
                 "id": f"personal-{catalog.slot_id}",
                 "name": catalog.name,
-                "type": catalog.media_type,
+                "type": _stremio_type(catalog.media_type),
                 "extra": [{"name": "skip", "isRequired": False}],
             }
         )
