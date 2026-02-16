@@ -14,7 +14,6 @@ from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from loguru import logger
 from sqlalchemy import func
-from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
