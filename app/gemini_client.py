@@ -5,7 +5,6 @@ This is the core AI component that analyzes media and generates Netflix-style ta
 """
 
 from typing import List, Dict, Optional
-import asyncio
 import json
 import re
 import google.generativeai as genai
