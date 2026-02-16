@@ -274,7 +274,9 @@ Overview: {item.get('overview', 'No description available')[:500]}
                     f"(out of {len(items)} requested)"
                 )
                 return salvaged
-            logger.error(f"Could not salvage any items. Response: {response_text[:500]}")
+            logger.error(
+                f"Could not salvage any items. Response: {response_text[:500]}"
+            )
             raise
         except Exception as e:
             logger.error(f"Gemini tagging failed: {e}")
