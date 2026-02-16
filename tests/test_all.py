@@ -262,6 +262,7 @@ def test_generate_universal_catalog(db):
             title="Dark Crime Movie 1",
             popularity=100.0,
             vote_average=8.0,
+            vote_count=500,
         ),
         MediaMetadata(
             tmdb_id=2,
@@ -269,6 +270,7 @@ def test_generate_universal_catalog(db):
             title="Dark Crime Movie 2",
             popularity=90.0,
             vote_average=7.5,
+            vote_count=300,
         ),
     ]
     db.add_all(movies)
@@ -376,6 +378,7 @@ def test_full_tagging_to_catalog_flow(db):
         overview="A dark and gritty crime story",
         popularity=100.0,
         vote_average=8.5,
+        vote_count=500,
     )
     db.add(movie)
     db.commit()
@@ -427,7 +430,8 @@ def test_catalog_query_performance(db):
     # Create 1000 test movies
     for i in range(1000):
         movie = MediaMetadata(
-            tmdb_id=i, media_type="movie", title=f"Movie {i}", popularity=float(i)
+            tmdb_id=i, media_type="movie", title=f"Movie {i}", popularity=float(i),
+            vote_count=100,
         )
         db.add(movie)
 
@@ -660,8 +664,12 @@ def test_universal_categories_have_valid_formulas(db):
         formula = cat.tag_formula
         assert "required" in formula, f"{cat.id} missing 'required' in formula"
         assert "min_required" in formula, f"{cat.id} missing 'min_required'"
-        assert len(formula["required"]) >= 2, f"{cat.id} needs >= 2 required tags"
-        assert formula["min_required"] >= 2, f"{cat.id} min_required should be >= 2"
+        # Era categories use mandatory + required; total constraint tags must be >= 2
+        mandatory = formula.get("mandatory", [])
+        required = formula["required"]
+        total_tags = len(mandatory) + len(required)
+        assert total_tags >= 2, f"{cat.id} needs >= 2 total constraint tags (has {total_tags})"
+        assert formula["min_required"] >= 1, f"{cat.id} min_required should be >= 1"
 
 
 def test_seed_categories_idempotent(db):
