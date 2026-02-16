@@ -499,6 +499,7 @@ async def start_auth(
     return RedirectResponse(url=auth_url)
 
 
+@app.get("/api/auth/trakt/callback")
 @app.get("/auth/trakt/callback")
 async def trakt_callback(
     code: str = Query(...),
