@@ -195,7 +195,7 @@ async def store_metadata(db: Session, items: list, media_type: MediaType):
 
 
 async def tag_items_batch(
-    db: Session, items: list, media_type: MediaType, batch_size: int = 50
+    db: Session, items: list, media_type: MediaType, batch_size: int = 100
 ):
     """Tag items in batches using Gemini AI."""
     logger.info(
