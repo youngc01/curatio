@@ -35,7 +35,9 @@ def set_sqlite_pragma(dbapi_conn, connection_record):
 
 
 # Session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(
+    autocommit=False, autoflush=False, expire_on_commit=False, bind=engine
+)
 
 
 def create_tables():

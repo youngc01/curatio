@@ -608,33 +608,57 @@ async def debug_catalogs(request: Request, _=Depends(verify_admin)):
             )
 
             # Per-category breakdown
+            # Snapshot category attributes up-front so a later rollback
+            # can't trigger DetachedInstanceError on lazy-refresh.
+            cat_snapshots = [
+                {
+                    "id": cat.id,
+                    "name": cat.name,
+                    "media_type": cat.media_type,
+                    "tag_formula": cat.tag_formula,
+                }
+                for cat in categories
+            ]
+
             category_details = []
             generator = CatalogGenerator(db)
-            for cat in categories:
+            for cat_info in cat_snapshots:
                 try:
                     content_count = (
                         db.query(func.count(UniversalCatalogContent.tmdb_id))
-                        .filter(UniversalCatalogContent.category_id == cat.id)
+                        .filter(
+                            UniversalCatalogContent.category_id == cat_info["id"]
+                        )
                         .scalar()
                         or 0
                     )
                 except Exception:
+                    db.rollback()
                     content_count = -1
                 # Check how many items would match the formula (live query)
                 # Wrapped in try/except because DB contention during active
                 # builds can cause this to fail
                 try:
-                    potential_matches = len(
-                        generator.generate_universal_catalog(cat, limit=5)
+                    cat_obj = (
+                        db.query(UniversalCategory)
+                        .filter(UniversalCategory.id == cat_info["id"])
+                        .first()
                     )
+                    if cat_obj:
+                        potential_matches = len(
+                            generator.generate_universal_catalog(cat_obj, limit=5)
+                        )
+                    else:
+                        potential_matches = -1
                 except Exception:
+                    db.rollback()
                     potential_matches = -1  # indicates query failed
                 category_details.append(
                     {
-                        "id": cat.id,
-                        "name": cat.name,
-                        "media_type": cat.media_type,
-                        "tag_formula": cat.tag_formula,
+                        "id": cat_info["id"],
+                        "name": cat_info["name"],
+                        "media_type": cat_info["media_type"],
+                        "tag_formula": cat_info["tag_formula"],
                         "pre_computed_items": content_count,
                         "potential_matches_sample": potential_matches,
                     }
