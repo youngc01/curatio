@@ -7,7 +7,7 @@
 
 <p align="center">
   Netflix-style content discovery powered by Gemini AI.<br>
-  40 curated catalogs. 150,000 tagged titles. $5 one-time, then free forever.
+  40 curated catalogs. 150,000 tagged titles. Inital one-time cost, then free forever.
 </p>
 
 <p align="center">
