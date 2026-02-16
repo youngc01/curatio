@@ -45,19 +45,24 @@ class CatalogGenerator:
         limit = limit or settings.catalog_size
         tag_formula = category.tag_formula
 
+        mandatory_tags = tag_formula.get("mandatory", [])
         required_tags = tag_formula.get("required", [])
         optional_tags = tag_formula.get("optional", [])
         min_required = tag_formula.get("min_required", len(required_tags))
+        min_vote_count = tag_formula.get("min_vote_count", 10)
 
         # Get tag IDs
-        all_tag_names = required_tags + optional_tags
+        all_tag_names = mandatory_tags + required_tags + optional_tags
         tag_map = {
             tag.name: tag.id
             for tag in self.db.query(Tag).filter(Tag.name.in_(all_tag_names)).all()
         }
 
+        mandatory_tag_ids = [tag_map[name] for name in mandatory_tags if name in tag_map]
         required_tag_ids = [tag_map[name] for name in required_tags if name in tag_map]
         optional_tag_ids = [tag_map[name] for name in optional_tags if name in tag_map]
+
+        all_match_ids = mandatory_tag_ids + required_tag_ids + optional_tag_ids
 
         # Query movies with matching tags
         query = (
@@ -68,22 +73,53 @@ class CatalogGenerator:
             )
             .filter(
                 MovieTag.media_type == category.media_type,
-                MovieTag.tag_id.in_(required_tag_ids + optional_tag_ids),
+                MovieTag.tag_id.in_(all_match_ids),
             )
             .group_by(MovieTag.tmdb_id)
         )
 
-        # Must have at least min_required of the required tags
-        if required_tag_ids:
-            subquery = (
+        # Mandatory tags: every single one must be present
+        if mandatory_tag_ids:
+            mandatory_sub = (
                 self.db.query(MovieTag.tmdb_id)
-                .filter(MovieTag.tag_id.in_(required_tag_ids))
+                .filter(
+                    MovieTag.tag_id.in_(mandatory_tag_ids),
+                    MovieTag.media_type == category.media_type,
+                )
+                .group_by(MovieTag.tmdb_id)
+                .having(
+                    func.count(func.distinct(MovieTag.tag_id))
+                    == len(mandatory_tag_ids)
+                )
+                .subquery()
+            )
+            query = query.filter(MovieTag.tmdb_id.in_(mandatory_sub.select()))
+
+        # Required tags: must have at least min_required of these
+        if required_tag_ids:
+            required_sub = (
+                self.db.query(MovieTag.tmdb_id)
+                .filter(
+                    MovieTag.tag_id.in_(required_tag_ids),
+                    MovieTag.media_type == category.media_type,
+                )
                 .group_by(MovieTag.tmdb_id)
                 .having(func.count(func.distinct(MovieTag.tag_id)) >= min_required)
                 .subquery()
             )
+            query = query.filter(MovieTag.tmdb_id.in_(required_sub.select()))
 
-            query = query.filter(MovieTag.tmdb_id.in_(subquery.select()))
+        # Quality floor: filter out junk with near-zero votes
+        if min_vote_count > 0:
+            quality_sub = (
+                self.db.query(MediaMetadata.tmdb_id)
+                .filter(
+                    MediaMetadata.media_type == category.media_type,
+                    MediaMetadata.vote_count >= min_vote_count,
+                )
+                .subquery()
+            )
+            query = query.filter(MovieTag.tmdb_id.in_(quality_sub.select()))
 
         # Order by match score and limit
         results = (

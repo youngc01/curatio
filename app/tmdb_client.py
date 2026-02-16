@@ -8,9 +8,19 @@ from typing import List, Dict, Optional, Literal
 from datetime import datetime, timedelta
 import httpx
 from loguru import logger
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.config import settings
+
+
+class TMDBServerError(Exception):
+    """TMDB returned a 5xx error (not worth retrying, especially at deep pages)."""
+    pass
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Only retry on transient errors, not TMDB 5xx server errors."""
+    return not isinstance(exc, TMDBServerError)
 
 MediaType = Literal["movie", "tv"]
 
@@ -29,7 +39,9 @@ class TMDBClient:
         await self.client.aclose()
 
     @retry(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10)
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception(_is_retryable),
     )
     async def _request(self, endpoint: str, params: Optional[Dict] = None) -> Dict:
         """
@@ -54,8 +66,13 @@ class TMDBClient:
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as e:
+            status = e.response.status_code
+            if status >= 500:
+                raise TMDBServerError(
+                    f"TMDB server error {status} on {endpoint}"
+                ) from e
             logger.error(
-                f"TMDB API error: {e.response.status_code} - {e.response.text}"
+                f"TMDB API error: {status} - {e.response.text}"
             )
             raise
         except Exception as e:
@@ -255,10 +272,16 @@ class TMDBClient:
         max_pages = min(500, (limit // 20) + 1)  # TMDB limits to 500 pages
 
         while page <= max_pages:
-            if media_type == "movie":
-                response = await self.get_popular_movies(page)
-            else:
-                response = await self.get_popular_tv_shows(page)
+            try:
+                if media_type == "movie":
+                    response = await self.get_popular_movies(page)
+                else:
+                    response = await self.get_popular_tv_shows(page)
+            except TMDBServerError:
+                logger.debug(
+                    f"Popular {media_type} reached TMDB limit at page {page}"
+                )
+                break
 
             results = response.get("results", [])
             if not results:
@@ -292,6 +315,11 @@ class TMDBClient:
             params["page"] = page
             try:
                 response = await self._request(endpoint, params=params.copy())
+            except TMDBServerError:
+                logger.debug(
+                    f"Discover {media_type} reached TMDB limit at page {page}"
+                )
+                break
             except Exception as e:
                 logger.warning(f"Discover page {page} failed: {e}")
                 break
@@ -363,6 +391,11 @@ class TMDBClient:
                     resp = await self.get_top_rated_movies(page)
                 else:
                     resp = await self.get_top_rated_tv_shows(page)
+            except TMDBServerError:
+                logger.debug(
+                    f"[{media_type}] Top rated reached TMDB limit at page {page}"
+                )
+                break
             except Exception:
                 break
             items = resp.get("results", [])
