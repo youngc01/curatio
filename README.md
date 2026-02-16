@@ -28,6 +28,7 @@
 - **Gemini AI Tagging** -- Every title semantically tagged across mood, genre, era, and style
 - **One-Time $5 Build** -- Tag 150,000 titles once, then serve catalogs at $0/month
 - **Admin Dashboard** -- Web UI to manage builds, monitor status, and configure settings
+- **Build Pause/Resume** -- Pause builds at any time and resume later, even after a container restart
 - **Daily Auto-Updates** -- Built-in scheduler fetches and tags new releases automatically
 - **Multi-User Support** -- Each Trakt user gets personalized recommendations
 - **Master Password** -- Gate access to prevent unauthorized usage
@@ -58,8 +59,8 @@ User -> Stremio -> Curatio (FastAPI) -> PostgreSQL (tag database) -> TMDB metada
 ### 1. Clone and Configure
 
 ```bash
-git clone https://github.com/yourusername/curatio.git
-cd curatio
+git clone https://github.com/youngc01/stremio-ai-addon.git
+cd stremio-ai-addon
 cp .env.example .env
 ```
 
@@ -95,6 +96,8 @@ docker-compose --profile workers run --rm worker python workers/initial_build.py
 # After completion, set GEMINI_PAID_TIER=false in .env
 ```
 
+**Or use the Admin Dashboard** (recommended): start the app and trigger the build from the Build tab at `/admin`. You can pause/resume and monitor progress with live logs.
+
 ### 3. Start Curatio
 
 ```bash
@@ -111,13 +114,14 @@ https://yourdomain.com/manifest.json
 ```
 
 **Personalized (with Trakt):**
-1. Visit `https://yourdomain.com` and connect your Trakt account
-2. Copy your personal manifest URL
-3. Install in Stremio
+1. Visit `https://yourdomain.com` and enter the master password
+2. Connect your Trakt account
+3. Copy your personal manifest URL
+4. Install in Stremio
 
 ### 5. Enable Daily Updates
 
-Add to `.env` and restart:
+Add to `.env` and restart, or toggle from the Admin Dashboard (Schedule tab):
 
 ```env
 DAILY_UPDATE_ENABLED=true
@@ -152,12 +156,14 @@ When connected to Trakt, users get catalogs like:
 
 ## Admin Dashboard
 
-Curatio includes a web-based admin dashboard at `/admin`:
+Curatio includes a web-based admin dashboard at `/admin`, protected by master password:
 
-- **Build Management** -- Trigger and monitor tagging builds with real-time logs
-- **Database Stats** -- View tagged title counts, catalog sizes, and user metrics
-- **Settings** -- Configure catalog sizes, refresh intervals, and feature flags
-- **User Management** -- View connected Trakt users and their catalog status
+- **Overview** -- Database stats (tagged titles, categories, users) and recent job history
+- **Build Management** -- Start, stop, pause, and resume builds with real-time log streaming
+- **Container Restart Recovery** -- Builds automatically resume where they left off after a restart. If the build was paused before a restart, it stays paused until you click Resume
+- **Catalog Diagnostics** -- Full pipeline diagnostic to identify issues, plus one-click catalog regeneration
+- **Settings** -- Configure API keys, catalog sizes, shuffle intervals, Gemini model, and feature flags -- all hot-reloaded without restarting
+- **Schedule** -- Enable/disable and configure the daily update scheduler
 
 ## Architecture
 
@@ -165,19 +171,20 @@ Curatio includes a web-based admin dashboard at `/admin`:
 curatio/
 ├── app/
 │   ├── main.py              # FastAPI app, Stremio manifest & catalog endpoints
-│   ├── admin.py             # Admin dashboard & build management
-│   ├── models.py            # SQLAlchemy models (10 tables)
+│   ├── admin.py             # Admin dashboard, build management & pause/resume
+│   ├── models.py            # SQLAlchemy models (12 tables)
 │   ├── config.py            # Pydantic settings from environment
 │   ├── database.py          # PostgreSQL connection & pooling
-│   ├── tmdb_client.py       # TMDB API client with retry logic
+│   ├── tmdb_client.py       # TMDB API client with multi-strategy discovery
 │   ├── gemini_client.py     # Gemini AI tagging engine
 │   ├── trakt_client.py      # Trakt OAuth & watch history
 │   ├── catalog_generator.py # SQL-based catalog builder
 │   ├── categories.py        # 40 universal category definitions
 │   ├── landing.py           # HTML landing & auth pages
-│   └── scheduler.py         # Daily update scheduler
+│   ├── scheduler.py         # Daily update scheduler
+│   └── crypto.py            # Token encryption for Trakt credentials
 ├── workers/
-│   ├── initial_build.py     # One-time full tagging build
+│   ├── initial_build.py     # One-time full tagging build (pause/resume aware)
 │   └── daily_update.py      # Daily new-release tagger
 ├── tests/
 │   └── test_all.py          # Unit, integration & performance tests
@@ -190,6 +197,30 @@ curatio/
 ├── requirements.txt
 └── .env.example
 ```
+
+## Configuration
+
+All settings can be configured via `.env` or overridden at runtime through the Admin Dashboard. See [`.env.example`](.env.example) for the full list with descriptions.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `TMDB_API_KEY` | -- | TMDB API key (required) |
+| `GEMINI_API_KEY` | -- | Gemini API key (required) |
+| `GEMINI_PAID_TIER` | `false` | Set `true` for initial build, then `false` |
+| `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model for tagging |
+| `TRAKT_CLIENT_ID` | -- | Trakt OAuth client ID (required) |
+| `TRAKT_CLIENT_SECRET` | -- | Trakt OAuth client secret (required) |
+| `MASTER_PASSWORD` | -- | Password to gate addon access (required) |
+| `SECRET_KEY` | -- | JWT signing key, min 32 chars (required) |
+| `BASE_URL` | -- | Public URL where the addon is hosted (required) |
+| `CATALOG_SIZE` | `200` | Total items stored per catalog |
+| `CATALOG_PAGE_SIZE` | `100` | Items returned per Stremio request |
+| `CATALOG_SHUFFLE_HOURS` | `3` | Randomize catalog order every N hours (0 = off) |
+| `DAILY_UPDATE_ENABLED` | `false` | Enable automatic daily updates |
+| `DAILY_UPDATE_TIME` | `03:00` | Time to run daily update (HH:MM UTC) |
+| `WORKERS` | `4` | Uvicorn worker count |
+| `DB_POOL_SIZE` | `20` | Database connection pool size |
+| `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
 ## Cost Breakdown
 
@@ -229,8 +260,23 @@ curatio/
 | `GET` | `/` | Landing page |
 | `GET` | `/auth/start?password=xxx` | Start Trakt OAuth |
 | `GET` | `/auth/trakt/callback` | OAuth callback |
-| `GET` | `/admin` | Admin dashboard |
+| `GET` | `/admin` | Admin dashboard (master password) |
 | `GET` | `/health` | Health check |
+
+### Admin Build API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/admin/api/build/start` | Start a database build |
+| `POST` | `/admin/api/build/stop` | Stop the running build |
+| `POST` | `/admin/api/build/pause` | Pause build between batches |
+| `POST` | `/admin/api/build/resume` | Resume a paused build |
+| `POST` | `/admin/api/build/daily` | Trigger a manual daily update |
+| `GET` | `/admin/api/build/status` | Current build status |
+| `GET` | `/admin/api/build/logs` | Build log lines (poll) |
+| `WS` | `/admin/ws/build-logs` | Live build log stream |
+| `POST` | `/admin/api/catalogs/regenerate` | Regenerate catalogs from tags |
+| `GET` | `/admin/api/debug` | Full pipeline diagnostic |
 
 ## Development
 
@@ -266,11 +312,13 @@ docker run -p 8000:8000 --env-file .env curatio
 
 | Problem | Solution |
 |---------|----------|
-| Empty catalogs | Run the initial build first |
-| Gemini rate limit | Wait 1 minute (free tier: 1,500 req/day) |
+| Empty catalogs | Run the initial build first, or use "Regenerate Catalogs" in the admin dashboard |
+| Gemini rate limit | Wait 1 minute (free tier: 1,500 req/day). The build auto-backs off on 429 errors |
+| Build interrupted | Just restart the container -- it auto-resumes where it left off |
 | Database connection failed | Check PostgreSQL: `docker-compose up -d postgres` |
 | Trakt OAuth redirect mismatch | Ensure `TRAKT_REDIRECT_URI` matches your Trakt app settings exactly |
 | Configuration errors | Verify all keys in `.env` have real values, not placeholders |
+| Catalogs not updating | Check that `DAILY_UPDATE_ENABLED=true` or trigger manually from the admin Build tab |
 
 ## Tech Stack
 
