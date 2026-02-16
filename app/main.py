@@ -20,6 +20,7 @@ from app.models import User, UniversalCategory, UserCatalog
 from app.catalog_generator import CatalogGenerator
 from app.trakt_client import trakt_client
 from app.landing import landing_page_html, auth_success_html, auth_error_html
+from app.admin import router as admin_router, load_settings_from_db
 
 
 def _stremio_type(media_type: str) -> str:
@@ -28,6 +29,7 @@ def _stremio_type(media_type: str) -> str:
     TMDB uses 'tv' but Stremio expects 'series'.
     """
     return "series" if media_type == "tv" else media_type
+
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -44,6 +46,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount admin portal
+app.include_router(admin_router)
 
 
 @app.on_event("startup")
@@ -67,6 +72,9 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
         raise
+
+    # Load admin settings from database (overrides env vars)
+    load_settings_from_db()
 
     # Start daily update scheduler if enabled
     if settings.daily_update_enabled:
@@ -285,7 +293,9 @@ async def universal_catalog(
     # Apply pagination
     paginated_items = items[skip : skip + 100]
 
-    return JSONResponse(content={"metas": _build_stremio_metas(paginated_items, catalog_type)})
+    return JSONResponse(
+        content={"metas": _build_stremio_metas(paginated_items, catalog_type)}
+    )
 
 
 @app.get("/{user_key}/catalog/{catalog_type}/{catalog_id}.json")
@@ -329,7 +339,9 @@ async def personalized_catalog(
     # Apply pagination
     paginated_items = items[skip : skip + 100]
 
-    return JSONResponse(content={"metas": _build_stremio_metas(paginated_items, catalog_type)})
+    return JSONResponse(
+        content={"metas": _build_stremio_metas(paginated_items, catalog_type)}
+    )
 
 
 # OAuth endpoints for Trakt authentication
