@@ -110,6 +110,7 @@ async def health_check():
     }
 
 
+@app.get("/manifest.json")
 @app.get("/manifest/universal.json")
 async def universal_manifest(db: Session = Depends(get_db_dependency)):
     """
