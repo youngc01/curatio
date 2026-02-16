@@ -5,12 +5,24 @@ This is the core AI component that analyzes media and generates Netflix-style ta
 """
 
 from typing import List, Dict, Optional
+import asyncio
 import json
 import google.generativeai as genai
 from loguru import logger
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception,
+)
 
 from app.config import settings
+
+
+def _is_retryable_error(exception: BaseException) -> bool:
+    """Check if an error is retryable (rate limit or server error)."""
+    error_str = str(exception)
+    return "429" in error_str or "Resource exhausted" in error_str or "503" in error_str
 
 
 class GeminiTaggingEngine:
@@ -175,7 +187,13 @@ Overview: {item.get('overview', 'No description available')[:500]}
         return prompt
 
     @retry(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10)
+        stop=stop_after_attempt(6),
+        wait=wait_exponential(multiplier=2, min=5, max=120),
+        retry=retry_if_exception(_is_retryable_error),
+        before_sleep=lambda retry_state: logger.warning(
+            f"Rate limited, retrying in {retry_state.next_action.sleep:.0f}s "
+            f"(attempt {retry_state.attempt_number}/6)..."
+        ),
     )
     async def tag_items(self, items: List[Dict]) -> List[Dict]:
         """
