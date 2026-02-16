@@ -1,11 +1,11 @@
 #!/bin/bash
-# GitHub Upload Script for Stremio AI Addon
+# GitHub Upload Script for Curatio
 # This script automates the entire GitHub upload process
 
 set -e  # Exit on error
 
 echo "=================================================="
-echo "  Stremio AI Addon - GitHub Upload Script"
+echo "  Curatio - GitHub Upload Script"
 echo "=================================================="
 echo ""
 
@@ -29,8 +29,8 @@ fi
 
 # Get repository name
 echo ""
-read -p "Enter repository name (default: stremio-ai-addon): " REPO_NAME
-REPO_NAME=${REPO_NAME:-stremio-ai-addon}
+read -p "Enter repository name (default: Curatio): " REPO_NAME
+REPO_NAME=${REPO_NAME:-Curatio}
 
 # Get GitHub username
 echo ""
@@ -86,7 +86,7 @@ if git diff --staged --quiet; then
     echo "ℹ️  No new changes to commit"
 else
     # Create initial commit
-    git commit -m "Initial commit: Stremio AI Addon
+    git commit -m "Initial commit: Curatio
 
 - Complete FastAPI application
 - Gemini AI tagging engine
