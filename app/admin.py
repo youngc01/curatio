@@ -60,14 +60,15 @@ def _apply_setting(key: str, value: str):
         if hasattr(settings, attr):
             current = getattr(settings, attr)
             if isinstance(current, bool):
-                converted = value.lower() in ("true", "1", "yes")
+                object.__setattr__(
+                    settings, attr, value.lower() in ("true", "1", "yes")
+                )
             elif isinstance(current, int):
-                converted = int(value)
+                object.__setattr__(settings, attr, int(value))
             elif isinstance(current, float):
-                converted = float(value)
+                object.__setattr__(settings, attr, float(value))
             else:
-                converted = value
-            object.__setattr__(settings, attr, converted)
+                object.__setattr__(settings, attr, value)
     except Exception as e:
         logger.warning(f"Failed to hot-reload setting {key}: {e}")
 

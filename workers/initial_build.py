@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.database import get_db, init_database  # noqa: E402
 from app.models import Tag, MovieTag, MediaMetadata, TaggingJob  # noqa: E402
-from app.tmdb_client import tmdb_client  # noqa: E402
+from app.tmdb_client import tmdb_client, MediaType  # noqa: E402
 from app.gemini_client import gemini_engine  # noqa: E402
 from app.catalog_generator import CatalogGenerator  # noqa: E402
 
@@ -138,7 +138,7 @@ async def create_tags(db: Session):
     logger.info(f"Created {created_count} new tags")
 
 
-async def fetch_popular_items(media_type: str, limit: int):
+async def fetch_popular_items(media_type: MediaType, limit: int):
     """Fetch popular movies or TV shows from TMDB."""
     logger.info(f"Fetching {limit} popular {media_type} items from TMDB...")
 
@@ -148,7 +148,7 @@ async def fetch_popular_items(media_type: str, limit: int):
     return items
 
 
-async def store_metadata(db: Session, items: list, media_type: str):
+async def store_metadata(db: Session, items: list, media_type: MediaType):
     """Store TMDB metadata in database."""
     logger.info(f"Storing metadata for {len(items)} {media_type} items...")
 
@@ -180,7 +180,7 @@ async def store_metadata(db: Session, items: list, media_type: str):
 
 
 async def tag_items_batch(
-    db: Session, items: list, media_type: str, batch_size: int = 50
+    db: Session, items: list, media_type: MediaType, batch_size: int = 50
 ):
     """Tag items in batches using Gemini AI."""
     logger.info(
