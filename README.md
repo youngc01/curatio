@@ -53,7 +53,7 @@ User -> Stremio -> Curatio (FastAPI) -> PostgreSQL (tag database) -> TMDB metada
 |---------|------|------|
 | Docker & Docker Compose | Free | [docs.docker.com](https://docs.docker.com/get-docker/) |
 | TMDB API key | Free | [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) |
-| Gemini API key | Free + $5 one-time | [aistudio.google.com](https://aistudio.google.com/app/apikey) |
+| Gemini API key | Free | [aistudio.google.com](https://aistudio.google.com/app/apikey) |
 | Trakt OAuth app | Free | [trakt.tv/oauth/applications/new](https://trakt.tv/oauth/applications/new) |
 
 ### 1. Clone and Configure
@@ -82,7 +82,7 @@ Generate a secret key:
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-### 2. Initial Build (~$5, ~3 hours)
+### 2. Initial Build (~3 hours)
 
 This tags 150,000 titles with Gemini AI. You only do this once.
 
@@ -226,11 +226,9 @@ All settings can be configured via `.env` or overridden at runtime through the A
 
 | Phase | What | Cost | Time |
 |-------|------|------|------|
-| Initial build | Tag 150K titles with Gemini | ~$5 | ~3 hours |
+| Initial build | Tag 150K titles with Gemini| ~3 hours |
 | Ongoing | Daily new releases (~50-100/day) | $0 (free tier) | ~5 min/day |
 | Hosting | Self-hosted via Docker | $0 | -- |
-
-**Total first year: $5. Every year after: $0.**
 
 ## Performance
 
