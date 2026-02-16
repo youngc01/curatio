@@ -15,12 +15,14 @@ from app.config import settings
 
 class TMDBServerError(Exception):
     """TMDB returned a 5xx error (not worth retrying, especially at deep pages)."""
+
     pass
 
 
 def _is_retryable(exc: BaseException) -> bool:
     """Only retry on transient errors, not TMDB 5xx server errors."""
     return not isinstance(exc, TMDBServerError)
+
 
 MediaType = Literal["movie", "tv"]
 
@@ -71,9 +73,7 @@ class TMDBClient:
                 raise TMDBServerError(
                     f"TMDB server error {status} on {endpoint}"
                 ) from e
-            logger.error(
-                f"TMDB API error: {status} - {e.response.text}"
-            )
+            logger.error(f"TMDB API error: {status} - {e.response.text}")
             raise
         except Exception as e:
             logger.error(f"TMDB request failed: {e}")
@@ -278,9 +278,7 @@ class TMDBClient:
                 else:
                     response = await self.get_popular_tv_shows(page)
             except TMDBServerError:
-                logger.debug(
-                    f"Popular {media_type} reached TMDB limit at page {page}"
-                )
+                logger.debug(f"Popular {media_type} reached TMDB limit at page {page}")
                 break
 
             results = response.get("results", [])
@@ -316,9 +314,7 @@ class TMDBClient:
             try:
                 response = await self._request(endpoint, params=params.copy())
             except TMDBServerError:
-                logger.debug(
-                    f"Discover {media_type} reached TMDB limit at page {page}"
-                )
+                logger.debug(f"Discover {media_type} reached TMDB limit at page {page}")
                 break
             except Exception as e:
                 logger.warning(f"Discover page {page} failed: {e}")
@@ -411,7 +407,9 @@ class TMDBClient:
 
         # --- Strategy 3: Discover by year (most popular per year) ---
         current_year = datetime.now().year
-        year_key = "primary_release_year" if media_type == "movie" else "first_air_date_year"
+        year_key = (
+            "primary_release_year" if media_type == "movie" else "first_air_date_year"
+        )
 
         for year in range(current_year, 1969, -1):
             if len(all_items) >= limit:
@@ -461,7 +459,23 @@ class TMDBClient:
             return all_items[:limit]
 
         # --- Strategy 5: International cinema by language ---
-        languages = ["ko", "ja", "fr", "es", "de", "it", "hi", "zh", "pt", "sv", "da", "no", "th", "tr", "pl"]
+        languages = [
+            "ko",
+            "ja",
+            "fr",
+            "es",
+            "de",
+            "it",
+            "hi",
+            "zh",
+            "pt",
+            "sv",
+            "da",
+            "no",
+            "th",
+            "tr",
+            "pl",
+        ]
         logger.info(f"[{media_type}] Fetching international content...")
         for lang in languages:
             if len(all_items) >= limit:
@@ -482,9 +496,7 @@ class TMDBClient:
                 f"(total: {len(all_items)})"
             )
 
-        logger.info(
-            f"[{media_type}] Fetch complete: {len(all_items)} unique items"
-        )
+        logger.info(f"[{media_type}] Fetch complete: {len(all_items)} unique items")
         return all_items[:limit]
 
     def extract_metadata(self, item: Dict, media_type: MediaType) -> Dict:

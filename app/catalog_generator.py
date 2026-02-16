@@ -58,7 +58,9 @@ class CatalogGenerator:
             for tag in self.db.query(Tag).filter(Tag.name.in_(all_tag_names)).all()
         }
 
-        mandatory_tag_ids = [tag_map[name] for name in mandatory_tags if name in tag_map]
+        mandatory_tag_ids = [
+            tag_map[name] for name in mandatory_tags if name in tag_map
+        ]
         required_tag_ids = [tag_map[name] for name in required_tags if name in tag_map]
         optional_tag_ids = [tag_map[name] for name in optional_tags if name in tag_map]
 
@@ -88,8 +90,7 @@ class CatalogGenerator:
                 )
                 .group_by(MovieTag.tmdb_id)
                 .having(
-                    func.count(func.distinct(MovieTag.tag_id))
-                    == len(mandatory_tag_ids)
+                    func.count(func.distinct(MovieTag.tag_id)) == len(mandatory_tag_ids)
                 )
                 .subquery()
             )
