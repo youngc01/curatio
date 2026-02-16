@@ -119,7 +119,7 @@ def check_database_connection() -> bool:
 
 
 def init_database():
-    """Initialize database (create tables if they don't exist)."""
+    """Initialize database (create tables and seed categories)."""
     try:
         # Check connection
         if not check_database_connection():
@@ -127,6 +127,15 @@ def init_database():
 
         # Create tables
         create_tables()
+
+        # Seed universal categories so manifest is never empty
+        from app.categories import seed_categories
+
+        db = SessionLocal()
+        try:
+            seed_categories(db)
+        finally:
+            db.close()
 
         logger.info("Database initialized successfully")
         return True
