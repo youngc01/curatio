@@ -115,12 +115,13 @@ async def health_check():
 
 
 @app.get("/manifest.json")
-@app.get("/manifest/universal.json")
 async def universal_manifest(db: Session = Depends(get_db_dependency)):
     """
     Stremio manifest for anonymous users (universal catalogs only).
 
     This is installed when users don't sign in with Trakt.
+    Stremio derives the base URL by stripping the last path segment,
+    so /manifest.json -> base URL is / -> catalogs at /catalog/{type}/{id}.json
     """
     # Get active universal categories
     categories = (
@@ -150,19 +151,29 @@ async def universal_manifest(db: Session = Depends(get_db_dependency)):
         "resources": ["catalog"],
         "types": ["movie", "series"],
         "catalogs": catalogs,
-        "idPrefixes": ["tt"],  # IMDB IDs
+        "idPrefixes": ["tmdb"],
         "behaviorHints": {"configurable": True, "configurationRequired": False},
     }
 
     return JSONResponse(content=manifest)
 
 
-@app.get("/manifest/{user_key}.json")
+@app.get("/manifest/universal.json")
+async def universal_manifest_redirect():
+    """Redirect legacy manifest URL to the correct path."""
+    return RedirectResponse(url="/manifest.json", status_code=301)
+
+
+@app.get("/{user_key}/manifest.json")
 async def personalized_manifest(
     user_key: str, db: Session = Depends(get_db_dependency)
 ):
     """
     Stremio manifest for authenticated users (universal + personalized catalogs).
+
+    URL pattern: /{user_key}/manifest.json
+    Stremio derives base URL as /{user_key}/ so catalogs resolve to
+    /{user_key}/catalog/{type}/{id}.json
 
     Args:
         user_key: Unique user identifier
@@ -221,11 +232,34 @@ async def personalized_manifest(
         "resources": ["catalog"],
         "types": ["movie", "series"],
         "catalogs": catalogs,
-        "idPrefixes": ["tt"],
+        "idPrefixes": ["tmdb"],
         "behaviorHints": {"configurable": True, "configurationRequired": False},
     }
 
     return JSONResponse(content=manifest)
+
+
+@app.get("/manifest/{user_key}.json")
+async def personalized_manifest_redirect(user_key: str):
+    """Redirect legacy personalized manifest URL to the correct path."""
+    return RedirectResponse(url=f"/{user_key}/manifest.json", status_code=301)
+
+
+def _build_stremio_metas(items: list, catalog_type: str) -> list:
+    """Convert catalog items to Stremio meta format."""
+    metas = []
+    for item in items:
+        meta = {
+            "id": f"tmdb:{item['tmdb_id']}",
+            "type": catalog_type,
+            "name": item["title"],
+        }
+
+        if item.get("poster"):
+            meta["poster"] = f"https://image.tmdb.org/t/p/w500{item['poster']}"
+
+        metas.append(meta)
+    return metas
 
 
 @app.get("/catalog/{catalog_type}/{catalog_id}.json")
@@ -251,24 +285,10 @@ async def universal_catalog(
     # Apply pagination
     paginated_items = items[skip : skip + 100]
 
-    # Convert to Stremio format
-    metas = []
-    for item in paginated_items:
-        meta = {
-            "id": f"tmdb:{item['tmdb_id']}",
-            "type": catalog_type,
-            "name": item["title"],
-        }
-
-        if item.get("poster"):
-            meta["poster"] = f"https://image.tmdb.org/t/p/w500{item['poster']}"
-
-        metas.append(meta)
-
-    return JSONResponse(content={"metas": metas})
+    return JSONResponse(content={"metas": _build_stremio_metas(paginated_items, catalog_type)})
 
 
-@app.get("/catalog/{user_key}/{catalog_type}/{catalog_id}.json")
+@app.get("/{user_key}/catalog/{catalog_type}/{catalog_id}.json")
 async def personalized_catalog(
     user_key: str,
     catalog_type: str,
@@ -278,6 +298,9 @@ async def personalized_catalog(
 ):
     """
     Personalized catalog endpoint (for authenticated users).
+
+    URL pattern: /{user_key}/catalog/{type}/{id}.json
+    Matches the base URL derived from /{user_key}/manifest.json
 
     Args:
         user_key: Unique user identifier
@@ -295,10 +318,10 @@ async def personalized_catalog(
 
     # Check if universal or personal catalog
     if catalog_id.startswith("universal-"):
-        actual_id = catalog_id.replace("universal-", "")
+        actual_id = catalog_id.replace("universal-", "", 1)
         items = generator.get_catalog_content(actual_id)
     elif catalog_id.startswith("personal-"):
-        actual_id = catalog_id.replace("personal-", "")
+        actual_id = catalog_id.replace("personal-", "", 1)
         items = generator.get_catalog_content(actual_id, user_id=user.id)  # type: ignore[arg-type]
     else:
         raise HTTPException(status_code=404, detail="Catalog not found")
@@ -306,21 +329,7 @@ async def personalized_catalog(
     # Apply pagination
     paginated_items = items[skip : skip + 100]
 
-    # Convert to Stremio format
-    metas = []
-    for item in paginated_items:
-        meta = {
-            "id": f"tmdb:{item['tmdb_id']}",
-            "type": catalog_type,
-            "name": item["title"],
-        }
-
-        if item.get("poster"):
-            meta["poster"] = f"https://image.tmdb.org/t/p/w500{item['poster']}"
-
-        metas.append(meta)
-
-    return JSONResponse(content={"metas": metas})
+    return JSONResponse(content={"metas": _build_stremio_metas(paginated_items, catalog_type)})
 
 
 # OAuth endpoints for Trakt authentication
@@ -401,7 +410,7 @@ async def trakt_callback(
         db.commit()
 
         # Return success page
-        manifest_url = f"{settings.base_url}/manifest/{user.user_key}.json"
+        manifest_url = f"{settings.base_url}/{user.user_key}/manifest.json"
         username = user.trakt_username or user.trakt_user_id
 
         return HTMLResponse(
