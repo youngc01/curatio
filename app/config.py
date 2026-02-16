@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     # Gemini API
     gemini_api_key: str = Field(..., description="Google Gemini API key")
     gemini_paid_tier: bool = Field(False, description="Enable paid tier for Gemini")
-    gemini_model: str = Field("gemini-2.0-flash-exp", description="Gemini model to use")
+    gemini_model: str = Field("gemini-2.0-flash", description="Gemini model to use")
 
     # Trakt API
     trakt_client_id: str = Field(..., description="Trakt OAuth client ID")
