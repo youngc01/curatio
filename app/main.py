@@ -7,7 +7,7 @@ Provides Stremio manifest and catalog endpoints.
 import asyncio
 
 from fastapi import FastAPI, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
@@ -19,6 +19,7 @@ from app.database import get_db_dependency, init_database, check_database_connec
 from app.models import User, UniversalCategory, UserCatalog
 from app.catalog_generator import CatalogGenerator
 from app.trakt_client import trakt_client
+from app.landing import landing_page_html, auth_success_html, auth_error_html
 
 
 def _stremio_type(media_type: str) -> str:
@@ -95,15 +96,10 @@ async def shutdown_event():
         logger.info("Scheduler stopped")
 
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    """Root endpoint - redirect to addon configuration page."""
-    return {
-        "name": settings.addon_name,
-        "version": "1.0.0",
-        "description": "AI-powered Netflix-style content discovery",
-        "manifest_url": f"{settings.base_url}/manifest/universal.json",
-    }
+    """Landing page with install options and Trakt connect."""
+    return HTMLResponse(content=landing_page_html())
 
 
 @app.get("/health")
@@ -404,19 +400,22 @@ async def trakt_callback(
 
         db.commit()
 
-        # Return installation URL
+        # Return success page
         manifest_url = f"{settings.base_url}/manifest/{user.user_key}.json"
+        username = user.trakt_username or user.trakt_user_id
 
-        return {
-            "success": True,
-            "manifest_url": manifest_url,
-            "install_url": f"stremio://{settings.base_url.replace('https://', '')}/manifest/{user.user_key}.json/manifest.json",
-            "message": "Authentication successful! Click the install URL to add to Stremio.",
-        }
+        return HTMLResponse(
+            content=auth_success_html(username, manifest_url, user.user_key)
+        )
 
     except Exception as e:
         logger.error(f"OAuth callback failed: {e}")
-        raise HTTPException(status_code=500, detail="Authentication failed")
+        return HTMLResponse(
+            content=auth_error_html(
+                "Could not complete Trakt authentication. Please try again."
+            ),
+            status_code=500,
+        )
 
 
 if __name__ == "__main__":
