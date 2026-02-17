@@ -328,7 +328,8 @@ def test_health_check(client):
 
 def test_universal_manifest(client):
     """Test universal manifest endpoint."""
-    response = client.get("/manifest.json")
+    with patch("app.main.get_install_token", return_value="test-token"):
+        response = client.get("/test-token/manifest.json")
     assert response.status_code == 200
 
     manifest = response.json()
@@ -338,16 +339,10 @@ def test_universal_manifest(client):
     assert manifest["idPrefixes"] == ["tmdb"]
 
 
-def test_legacy_manifest_redirect(client):
-    """Test that legacy /manifest/universal.json redirects to /manifest.json."""
-    response = client.get("/manifest/universal.json", follow_redirects=False)
-    assert response.status_code == 301
-    assert response.headers["location"] == "/manifest.json"
-
-
 def test_catalog_endpoint_not_found(client):
     """Test catalog endpoint with non-existent catalog."""
-    response = client.get("/catalog/movie/nonexistent.json")
+    with patch("app.main.get_install_token", return_value="test-token"):
+        response = client.get("/test-token/catalog/movie/nonexistent.json")
     # Should return empty metas, not 404
     assert response.status_code == 200
     assert "metas" in response.json()
@@ -514,9 +509,16 @@ async def test_gemini_api_error_handling():
 # =============================================================================
 
 
-def test_master_password_protection(client):
+def test_master_password_protection(client, db):
     """Test that master password is required for authentication."""
-    response = client.get("/auth/start?password=wrong_password")
+    from contextlib import contextmanager
+
+    @contextmanager
+    def mock_get_db():
+        yield db
+
+    with patch("app.main.get_db", mock_get_db):
+        response = client.get("/auth/start?password=wrong_password")
     assert response.status_code == 403
 
 
