@@ -469,6 +469,27 @@ async def personalized_catalog(
     return _serve_catalog(items, catalog_id, catalog_type, skip)
 
 
+@app.get("/auth/verify-invite")
+async def verify_invite(
+    invite: str = Query(..., description="Invite code to verify"),
+):
+    """Verify an invite code is valid without consuming it."""
+    with get_db() as db_session:
+        inv = (
+            db_session.query(InviteCode)
+            .filter(InviteCode.code == invite, InviteCode.is_used.is_(False))
+            .first()
+        )
+        if inv:
+            if inv.expires_at and datetime.utcnow() > inv.expires_at:
+                raise HTTPException(status_code=403, detail="Invite code has expired")
+            return {"status": "valid"}
+        elif invite == settings.master_password:
+            return {"status": "valid"}
+        else:
+            raise HTTPException(status_code=403, detail="Invalid invite code")
+
+
 # OAuth endpoints for Trakt authentication
 @app.get("/auth/start")
 async def start_auth(

@@ -100,35 +100,32 @@ footer a:hover{{color:#e5e5e5}}
 
 <div class="container">
 
-  <!-- Quick Install Card -->
+  <!-- Invite Code Card -->
   <div class="card">
-    <h2>Install Addon</h2>
-    <p class="subtitle">Get 40 AI-curated catalogs instantly — no account required.</p>
-    <a class="btn btn-primary" href="{stremio_install}">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-      Install in Stremio
-    </a>
-    <div class="manifest-url">{manifest_url}</div>
-  </div>
+    <h2>Get Started</h2>
+    <p class="subtitle">Enter your invite code to install the addon or connect your Trakt account.</p>
 
-  <div class="divider">or personalise with Trakt</div>
+    <div class="input-group">
+      <label for="invite-code">Invite Code</label>
+      <input type="text" id="invite-code" placeholder="Enter your invite code" required autocomplete="off">
+    </div>
+    <p class="error-msg" id="error-msg"></p>
 
-  <!-- Trakt Connect Card -->
-  <div class="card">
-    <h2>Connect Trakt Account</h2>
-    <p class="subtitle">Use your invite code to link Trakt and unlock personalized recommendations tailored to your taste.</p>
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <button class="btn btn-primary" onclick="verifyAndInstall()">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Install in Stremio
+      </button>
 
-    <form id="trakt-form" onsubmit="return startTraktAuth(event)">
-      <div class="input-group">
-        <label for="invite-code">Invite Code</label>
-        <input type="text" id="invite-code" name="invite" placeholder="Enter your invite code" required autocomplete="off">
-      </div>
-      <button class="btn btn-trakt" type="submit">
+      <div class="divider">or personalise with Trakt</div>
+
+      <button class="btn btn-trakt" onclick="startTraktAuth()">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
         Connect with Trakt
       </button>
-      <p class="error-msg" id="error-msg"></p>
-    </form>
+    </div>
+
+    <div class="manifest-url" id="manifest-url" style="display:none"></div>
   </div>
 
   <!-- Feature Grid -->
@@ -161,20 +158,54 @@ footer a:hover{{color:#e5e5e5}}
 </footer>
 
 <script>
-function startTraktAuth(e) {{
-  e.preventDefault();
-  var code = document.getElementById('invite-code').value;
-  if (!code) return false;
+function getCode() {{
+  var code = document.getElementById('invite-code').value.trim();
   var errEl = document.getElementById('error-msg');
   errEl.style.display = 'none';
+  if (!code) {{
+    errEl.textContent = 'Please enter an invite code.';
+    errEl.style.display = 'block';
+    return null;
+  }}
+  return code;
+}}
 
-  // Verify invite code first, then redirect
+function verifyAndInstall() {{
+  var code = getCode();
+  if (!code) return;
+  var errEl = document.getElementById('error-msg');
+
+  fetch('/auth/verify-invite?invite=' + encodeURIComponent(code)).then(function(resp) {{
+    if (resp.ok) {{
+      // Code is valid — show install link and auto-open Stremio
+      var stremioUrl = 'stremio://{base_url.replace("https://", "").replace("http://", "")}/manifest.json';
+      var manifestUrl = '{manifest_url}';
+      document.getElementById('manifest-url').textContent = manifestUrl;
+      document.getElementById('manifest-url').style.display = 'block';
+      window.location.href = stremioUrl;
+    }} else {{
+      return resp.json().then(function(data) {{
+        errEl.textContent = data.detail || 'Invalid or expired invite code.';
+        errEl.style.display = 'block';
+      }});
+    }}
+  }}).catch(function() {{
+    errEl.textContent = 'Something went wrong. Please try again.';
+    errEl.style.display = 'block';
+  }});
+}}
+
+function startTraktAuth() {{
+  var code = getCode();
+  if (!code) return;
+  var errEl = document.getElementById('error-msg');
+
+  // Verify invite code first, then redirect to Trakt OAuth
   fetch('/auth/start?invite=' + encodeURIComponent(code), {{
     method: 'GET',
     redirect: 'manual'
   }}).then(function(resp) {{
     if (resp.type === 'opaqueredirect' || resp.status === 307 || resp.status === 302 || resp.status === 303) {{
-      // Redirect to Trakt OAuth
       window.location.href = '/auth/start?invite=' + encodeURIComponent(code);
     }} else if (resp.status === 403) {{
       errEl.textContent = 'Invalid or expired invite code. Please try again.';
@@ -186,11 +217,8 @@ function startTraktAuth(e) {{
       }});
     }}
   }}).catch(function() {{
-    // fetch with redirect:'manual' may throw — just navigate directly
     window.location.href = '/auth/start?invite=' + encodeURIComponent(code);
   }});
-
-  return false;
 }}
 </script>
 </body>
