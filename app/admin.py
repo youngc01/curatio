@@ -1332,7 +1332,7 @@ tr:last-child td{border-bottom:none}
       <div class="card">
         <h3>Generate Invite Code</h3>
         <p style="color:#8b949e;font-size:13px;margin-bottom:20px">
-          Create one-time invite codes for users to connect their Trakt accounts. Each code can only be used once.
+          Create one-time invite codes for new users. Each code can only be used once.
         </p>
         <div class="card-row">
           <div class="form-group">
