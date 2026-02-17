@@ -1675,7 +1675,7 @@ async function checkAuth() {
       document.getElementById('dashboard').style.display = 'block';
       loadAll();
     }
-  } catch { /* show login */ }
+  } catch(e) { /* show login */ }
   finally { _checkAuthAbort = null; }
 }
 
