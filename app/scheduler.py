@@ -97,6 +97,18 @@ async def run_scheduler() -> None:
             logger.info("Starting scheduled daily update...")
             await run_daily_update()
 
+            # Sync personalized Trakt catalogs for all users
+            if settings.enable_trakt_sync:
+                logger.info("Starting Trakt catalog sync for all users...")
+                try:
+                    from workers.trakt_sync import sync_all_users
+                    from app.database import get_db
+
+                    with get_db() as db:
+                        await sync_all_users(db)
+                except Exception as e:
+                    logger.error(f"Trakt sync failed: {e}")
+
         except asyncio.CancelledError:
             logger.info("Scheduler cancelled, shutting down")
             break

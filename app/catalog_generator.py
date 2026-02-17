@@ -230,9 +230,11 @@ class CatalogGenerator:
             return self._generate_because_you_watched(user_id, params, limit)
         elif catalog_method == "hidden_gems":
             return self._generate_hidden_gems(user_id, limit)
-        elif catalog_method == "trakt_recommendations":
-            return self._generate_from_tmdb_ids(params, limit)
-        elif catalog_method == "trakt_watchlist":
+        elif catalog_method in (
+            "trakt_recommendations",
+            "trakt_trending",
+            "trakt_popular_weekly",
+        ):
             return self._generate_from_tmdb_ids(params, limit)
         else:
             logger.warning(f"Unknown catalog method: {catalog_method}")

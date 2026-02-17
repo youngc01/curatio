@@ -109,6 +109,28 @@ def _stremio_type(media_type: str) -> str:
     return "series" if media_type == "tv" else media_type
 
 
+def _schedule_user_sync(user_id: int, access_token: str):
+    """Fire-and-forget background task to sync a user's Trakt catalogs."""
+
+    async def _do_sync():
+        from workers.trakt_sync import sync_user_catalogs
+
+        try:
+            with get_db() as db:
+                user = db.query(User).filter(User.id == user_id).first()
+                if user:
+                    await sync_user_catalogs(user, db, access_token)
+        except Exception as e:
+            logger.error(f"Background sync failed for user {user_id}: {e}")
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_do_sync())
+        logger.info(f"Scheduled background Trakt sync for user {user_id}")
+    except RuntimeError:
+        logger.warning("No event loop — skipping background sync")
+
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Curatio",
@@ -291,31 +313,37 @@ async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
         .all()
     )
 
-    # Get user's personalized catalogs
+    # Get user's personalized catalogs, ordered like Netflix:
+    # BYW first, then recommendations, trending, popular, then universal
+    from workers.trakt_sync import get_slot_sort_order
+
     user_catalogs = (
         db.query(UserCatalog)
         .filter(UserCatalog.user_id == user.id, UserCatalog.is_active.is_(True))
         .all()
     )
+    user_catalogs.sort(key=lambda c: get_slot_sort_order(c.slot_id))
 
     catalogs = []
 
-    for category in universal_categories:
-        catalogs.append(
-            {
-                "id": f"universal-{category.id}",
-                "name": category.name,
-                "type": _stremio_type(category.media_type),
-                "extra": [{"name": "skip", "isRequired": False}],
-            }
-        )
-
+    # Personalized catalogs FIRST (like Netflix/Prime/HBO)
     for catalog in user_catalogs:
         catalogs.append(
             {
                 "id": f"personal-{catalog.slot_id}",
                 "name": catalog.name,
                 "type": _stremio_type(catalog.media_type),
+                "extra": [{"name": "skip", "isRequired": False}],
+            }
+        )
+
+    # Then universal AI-tag categories
+    for category in universal_categories:
+        catalogs.append(
+            {
+                "id": f"universal-{category.id}",
+                "name": category.name,
+                "type": _stremio_type(category.media_type),
                 "extra": [{"name": "skip", "isRequired": False}],
             }
         )
@@ -646,6 +674,9 @@ async def trakt_callback(
                     inv.used_at = datetime.utcnow()
                     inv.used_by = trakt_username
                     inv_db.commit()
+
+        # Trigger background Trakt sync to build personalized catalogs
+        _schedule_user_sync(user.id, token_data["access_token"])
 
         # Return success page
         manifest_url = f"{settings.base_url}/{user.user_key}/manifest.json"
