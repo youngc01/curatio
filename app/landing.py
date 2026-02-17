@@ -93,7 +93,7 @@ footer a:hover{{color:#e5e5e5}}
 
 <div class="hero">
   <h1><span>CURATIO</span></h1>
-  <p>AI-curated cinema for Stremio. 40 curated catalogs with 150k+ movies and shows.</p>
+  <p>AI-curated cinema for Stremio. 40 universal catalogs, 14 personalized rows, and 150k+ tagged titles.</p>
 </div>
 
 <div class="container">
@@ -130,8 +130,8 @@ footer a:hover{{color:#e5e5e5}}
   <div class="features">
     <div class="feature">
       <div class="icon">&#127916;</div>
-      <h3>40 Curated Catalogs</h3>
-      <p>From Dark Crime Dramas to Cyberpunk Futures — browse by mood, era, and style.</p>
+      <h3>54 Catalog Rows</h3>
+      <p>40 universal catalogs plus 14 personalized rows — Up Next, Top 10 Today, Because You Watched, and more.</p>
     </div>
     <div class="feature">
       <div class="icon">&#129302;</div>
@@ -140,13 +140,13 @@ footer a:hover{{color:#e5e5e5}}
     </div>
     <div class="feature">
       <div class="icon">&#128202;</div>
-      <h3>Trakt Integration</h3>
-      <p>Connect your watch history for recommendations that adapt to your taste.</p>
+      <h3>Trakt Personalization</h3>
+      <p>Up Next, Because You Watched, and Recommended For You — all powered by your watch history.</p>
     </div>
     <div class="feature">
-      <div class="icon">&#128260;</div>
-      <h3>Daily Updates</h3>
-      <p>New releases are tagged and slotted into catalogs automatically every day.</p>
+      <div class="icon">&#128293;</div>
+      <h3>Top 10 &amp; Trending</h3>
+      <p>Today's most-watched ranked 1-10, plus what's trending and all-time popular — updated daily.</p>
     </div>
   </div>
 </div>
