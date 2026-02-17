@@ -20,7 +20,9 @@ def landing_page_html() -> str:
 body{{
   font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,sans-serif;
   background:#0d0d0d;color:#e5e5e5;min-height:100vh;
+  min-height:100dvh;
   display:flex;flex-direction:column;align-items:center;
+  -webkit-text-size-adjust:100%;
 }}
 .hero{{
   width:100%;padding:60px 20px 40px;text-align:center;
@@ -28,20 +30,22 @@ body{{
 }}
 .hero h1{{font-size:2.4rem;font-weight:700;margin-bottom:8px;letter-spacing:2px}}
 .hero h1 span{{color:#a855f7}}
-.hero p{{color:#999;font-size:1.1rem;max-width:520px;margin:0 auto}}
+.hero p{{color:#999;font-size:1.1rem;max-width:520px;margin:0 auto;line-height:1.5}}
 .container{{max-width:680px;width:100%;padding:0 20px}}
 .card{{
   background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;
   padding:32px;margin-top:28px;
 }}
 .card h2{{font-size:1.25rem;margin-bottom:6px}}
-.card .subtitle{{color:#888;font-size:.9rem;margin-bottom:20px}}
+.card .subtitle{{color:#888;font-size:.9rem;margin-bottom:20px;line-height:1.4}}
 .btn{{
   display:inline-flex;align-items:center;justify-content:center;gap:8px;
-  padding:12px 28px;border-radius:8px;font-size:1rem;font-weight:600;
+  padding:14px 28px;border-radius:10px;font-size:1rem;font-weight:600;
   cursor:pointer;border:none;text-decoration:none;transition:all .2s;
-  width:100%;
+  width:100%;min-height:48px;
+  -webkit-tap-highlight-color:transparent;
 }}
+.btn:active{{transform:scale(.98);opacity:.9}}
 .btn-primary{{background:#a855f7;color:#fff}}
 .btn-primary:hover{{background:#7c3aed}}
 .btn-secondary{{background:#2a2a2a;color:#e5e5e5;border:1px solid #444}}
@@ -50,42 +54,66 @@ body{{
 .btn-trakt:hover{{background:#c8171e}}
 .divider{{
   display:flex;align-items:center;gap:16px;margin:28px 0;color:#555;font-size:.85rem;
+  white-space:nowrap;
 }}
 .divider::before,.divider::after{{content:'';flex:1;border-top:1px solid #333}}
 .input-group{{margin-bottom:16px}}
 .input-group label{{display:block;font-size:.85rem;color:#999;margin-bottom:6px}}
 .input-group input{{
-  width:100%;padding:12px 14px;background:#111;border:1px solid #333;
-  border-radius:8px;color:#e5e5e5;font-size:.95rem;outline:none;
+  width:100%;padding:14px;background:#111;border:1px solid #333;
+  border-radius:8px;color:#e5e5e5;font-size:16px;outline:none;
+  -webkit-appearance:none;appearance:none;
 }}
-.input-group input:focus{{border-color:#a855f7}}
+.input-group input:focus{{border-color:#a855f7;box-shadow:0 0 0 3px rgba(168,85,247,.15)}}
 .error-msg{{
   color:#f87171;font-size:.85rem;margin-top:8px;display:none;
 }}
 .features{{
   display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:28px;
+  margin-bottom:20px;
 }}
 .feature{{
   background:#1a1a1a;border:1px solid #2a2a2a;border-radius:10px;padding:20px;
 }}
 .feature .icon{{font-size:1.6rem;margin-bottom:8px}}
 .feature h3{{font-size:.95rem;margin-bottom:4px}}
-.feature p{{color:#888;font-size:.8rem;line-height:1.4}}
+.feature p{{color:#888;font-size:.8rem;line-height:1.5}}
 .manifest-url{{
-  margin-top:12px;padding:10px 14px;background:#111;border:1px solid #333;
+  margin-top:16px;padding:12px 14px;background:#111;border:1px solid #333;
   border-radius:8px;font-family:monospace;font-size:.8rem;color:#888;
-  word-break:break-all;user-select:all;
+  word-break:break-all;user-select:all;-webkit-user-select:all;
+  overflow-x:auto;
 }}
 footer{{
   margin-top:auto;padding:32px 20px;text-align:center;
   color:#555;font-size:.8rem;
+  padding-bottom:max(32px,env(safe-area-inset-bottom));
 }}
 footer a{{color:#888;text-decoration:none}}
 footer a:hover{{color:#e5e5e5}}
-@media(max-width:520px){{
-  .hero h1{{font-size:1.6rem}}
-  .features{{grid-template-columns:1fr}}
-  .card{{padding:24px 18px}}
+@media(max-width:600px){{
+  .hero{{padding:40px 16px 28px}}
+  .hero h1{{font-size:1.8rem;letter-spacing:1px}}
+  .hero p{{font-size:.95rem}}
+  .container{{padding:0 16px}}
+  .card{{padding:24px 18px;margin-top:20px;border-radius:10px}}
+  .card h2{{font-size:1.15rem}}
+  .card .subtitle{{font-size:.85rem}}
+  .btn{{padding:14px 20px;font-size:.95rem;border-radius:10px}}
+  .divider{{margin:20px 0;font-size:.8rem}}
+  .features{{grid-template-columns:1fr;gap:12px;margin-top:20px}}
+  .feature{{padding:16px}}
+  .feature .icon{{font-size:1.4rem;margin-bottom:6px}}
+  .feature h3{{font-size:.9rem}}
+  .feature p{{font-size:.8rem}}
+  .manifest-url{{font-size:.7rem;padding:10px 12px}}
+  footer{{padding:24px 16px}}
+}}
+@media(max-width:360px){{
+  .hero h1{{font-size:1.5rem}}
+  .hero p{{font-size:.88rem}}
+  .card{{padding:20px 14px}}
+  .btn{{padding:12px 16px;font-size:.9rem}}
 }}
 </style>
 </head>
@@ -244,8 +272,10 @@ def auth_success_html(username: str, manifest_url: str, user_key: str) -> str:
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{
   font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,sans-serif;
-  background:#0d0d0d;color:#e5e5e5;min-height:100vh;
+  background:#0d0d0d;color:#e5e5e5;min-height:100vh;min-height:100dvh;
   display:flex;align-items:center;justify-content:center;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  -webkit-text-size-adjust:100%;
 }}
 .card{{
   max-width:500px;width:100%;margin:20px;padding:40px;
@@ -258,22 +288,39 @@ body{{
 .check svg{{stroke:#22c55e;width:32px;height:32px}}
 h1{{font-size:1.5rem;margin-bottom:4px}}
 h1 span{{color:#a855f7}}
-.user{{color:#999;font-size:.95rem;margin-bottom:28px}}
+.user{{color:#999;font-size:.95rem;margin-bottom:28px;line-height:1.4}}
 .btn{{
   display:inline-flex;align-items:center;justify-content:center;gap:8px;
-  padding:14px 28px;border-radius:8px;font-size:1rem;font-weight:600;
+  padding:14px 28px;border-radius:10px;font-size:1rem;font-weight:600;
   cursor:pointer;border:none;text-decoration:none;transition:all .2s;width:100%;
+  min-height:48px;-webkit-tap-highlight-color:transparent;
 }}
+.btn:active{{transform:scale(.98);opacity:.9}}
 .btn-primary{{background:#e50914;color:#fff;margin-bottom:12px}}
 .btn-primary:hover{{background:#c40812}}
 .btn-secondary{{background:#2a2a2a;color:#e5e5e5;border:1px solid #444}}
 .btn-secondary:hover{{background:#333}}
 .manifest-url{{
-  margin-top:20px;padding:10px 14px;background:#111;border:1px solid #333;
+  margin-top:20px;padding:12px 14px;background:#111;border:1px solid #333;
   border-radius:8px;font-family:monospace;font-size:.75rem;color:#666;
-  word-break:break-all;user-select:all;
+  word-break:break-all;user-select:all;-webkit-user-select:all;overflow-x:auto;
 }}
-.hint{{color:#555;font-size:.8rem;margin-top:12px}}
+.hint{{color:#555;font-size:.8rem;margin-top:12px;line-height:1.4}}
+@media(max-width:600px){{
+  body{{padding:16px}}
+  .card{{padding:28px 20px;margin:12px;border-radius:12px}}
+  .check{{width:56px;height:56px;margin-bottom:16px}}
+  .check svg{{width:28px;height:28px}}
+  h1{{font-size:1.3rem}}
+  .user{{font-size:.9rem;margin-bottom:24px}}
+  .btn{{padding:14px 20px;font-size:.95rem}}
+  .manifest-url{{font-size:.7rem;padding:10px 12px}}
+  .hint{{font-size:.75rem}}
+}}
+@media(max-width:360px){{
+  .card{{padding:24px 16px}}
+  .btn{{padding:12px 16px;font-size:.9rem}}
+}}
 </style>
 </head>
 <body>
@@ -315,8 +362,10 @@ def auth_error_html(message: str) -> str:
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{
   font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,sans-serif;
-  background:#0d0d0d;color:#e5e5e5;min-height:100vh;
+  background:#0d0d0d;color:#e5e5e5;min-height:100vh;min-height:100dvh;
   display:flex;align-items:center;justify-content:center;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  -webkit-text-size-adjust:100%;
 }}
 .card{{
   max-width:500px;width:100%;margin:20px;padding:40px;
@@ -328,14 +377,28 @@ body{{
   font-size:28px;
 }}
 h1{{font-size:1.5rem;margin-bottom:12px}}
-p{{color:#999;font-size:.95rem;margin-bottom:24px}}
+p{{color:#999;font-size:.95rem;margin-bottom:24px;line-height:1.5}}
 .btn{{
   display:inline-flex;align-items:center;justify-content:center;
-  padding:12px 28px;border-radius:8px;font-size:1rem;font-weight:600;
+  padding:14px 28px;border-radius:10px;font-size:1rem;font-weight:600;
   cursor:pointer;border:none;text-decoration:none;transition:all .2s;
   background:#2a2a2a;color:#e5e5e5;border:1px solid #444;width:100%;
+  min-height:48px;-webkit-tap-highlight-color:transparent;
 }}
 .btn:hover{{background:#333}}
+.btn:active{{transform:scale(.98);opacity:.9}}
+@media(max-width:600px){{
+  body{{padding:16px}}
+  .card{{padding:28px 20px;margin:12px;border-radius:12px}}
+  .icon{{width:56px;height:56px;font-size:24px;margin-bottom:16px}}
+  h1{{font-size:1.3rem;margin-bottom:10px}}
+  p{{font-size:.9rem;margin-bottom:20px}}
+  .btn{{padding:14px 20px;font-size:.95rem}}
+}}
+@media(max-width:360px){{
+  .card{{padding:24px 16px}}
+  .btn{{padding:12px 16px;font-size:.9rem}}
+}}
 </style>
 </head>
 <body>
