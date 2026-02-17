@@ -5,10 +5,12 @@ Uses the AI tag database for recommendations (not Trakt's /related endpoint).
 Flow: Trakt tells us WHAT they watched → tag DB powers the recommendations.
 
 Generates Netflix/Prime/HBO-style catalog rows:
-  1. "Because You Watched [Title]" x3  (tag-based similarity)
-  2. "Recommended For You"             (Trakt algorithm)
+  1. "Because You Watched [Title]" x5  (tag-based similarity)
+  2. "Recommended For You"             (tag-based taste profile)
   3. "Trending Now"                    (Trakt community)
   4. "Popular This Week"               (Trakt community)
+  5. "Most Popular"                    (Trakt all-time)
+  6. "Most Anticipated"                (Trakt community wishlists)
 """
 
 import asyncio
@@ -36,12 +38,18 @@ SLOT_ORDER = {
     "byw-1": 1,
     "byw-2": 2,
     "byw-3": 3,
-    "trakt-rec-movie": 4,
-    "trakt-rec-series": 5,
-    "trakt-trending-movie": 6,
-    "trakt-trending-series": 7,
-    "trakt-popular-movie": 8,
-    "trakt-popular-series": 9,
+    "byw-4": 4,
+    "byw-5": 5,
+    "rec-movie": 6,
+    "rec-series": 7,
+    "trakt-trending-movie": 8,
+    "trakt-trending-series": 9,
+    "trakt-popular-movie": 10,
+    "trakt-popular-series": 11,
+    "most-popular-movie": 12,
+    "most-popular-series": 13,
+    "anticipated-movie": 14,
+    "anticipated-series": 15,
 }
 
 
@@ -157,6 +165,59 @@ def build_taste_profile(
     return [t.tag_id for t in user_tags]
 
 
+def find_recommendations_by_taste(
+    db: Session,
+    watched_tmdb_ids: Set[int],
+    media_type: str,
+    top_n_tags: int = 15,
+    limit: int = 40,
+) -> List[int]:
+    """
+    Generate tag-based recommendations from a user's taste profile.
+
+    Aggregates the user's most frequent + highest-confidence tags across all
+    watched items, then finds unwatched items that best match that profile.
+
+    Args:
+        db: Database session
+        watched_tmdb_ids: TMDB IDs of items the user has watched
+        media_type: 'movie' or 'tv'
+        top_n_tags: Number of top tags to use from taste profile
+        limit: Max results
+
+    Returns:
+        List of TMDB IDs ranked by taste-profile similarity
+    """
+    taste_tags = build_taste_profile(
+        db, list(watched_tmdb_ids), media_type, top_n_tags=top_n_tags
+    )
+    if not taste_tags:
+        logger.debug(f"No taste profile for {media_type} — skipping tag recs")
+        return []
+
+    results = (
+        db.query(
+            MovieTag.tmdb_id,
+            func.count(MovieTag.tag_id).label("matching_tags"),
+            func.avg(MovieTag.confidence).label("avg_confidence"),
+        )
+        .filter(
+            MovieTag.tag_id.in_(taste_tags),
+            MovieTag.media_type == media_type,
+            ~MovieTag.tmdb_id.in_(watched_tmdb_ids),
+        )
+        .group_by(MovieTag.tmdb_id)
+        .order_by(
+            func.count(MovieTag.tag_id).desc(),
+            func.avg(MovieTag.confidence).desc(),
+        )
+        .limit(limit)
+        .all()
+    )
+
+    return [r.tmdb_id for r in results]
+
+
 # ---------------------------------------------------------------------------
 # Core sync logic
 # ---------------------------------------------------------------------------
@@ -197,7 +258,7 @@ async def sync_user_catalogs(
     recent_history = await trakt_client.get_user_history(access_token, limit=50)
 
     byw_seeds = _pick_byw_seeds(
-        db, recent_history, watched_movie_ids | watched_show_ids
+        db, recent_history, watched_movie_ids | watched_show_ids, max_seeds=5
     )
 
     for i, seed in enumerate(byw_seeds):
@@ -209,7 +270,7 @@ async def sync_user_catalogs(
             reference_tmdb_id=seed["tmdb_id"],
             media_type=seed["media_type"],
             exclude_ids=exclude,
-            limit=40,
+            limit=100,
         )
 
         if similar_ids:
@@ -229,16 +290,18 @@ async def sync_user_catalogs(
             logger.info(f"  BYW '{seed['title']}': {len(similar_ids)} items")
 
     # ------------------------------------------------------------------
-    # Step 3: "Recommended For You" — Trakt's own algorithm
+    # Step 3: "Recommended For You" — tag-based taste profile
     # ------------------------------------------------------------------
-    for media_label, fetch_fn, media_type, slot in [
-        ("movies", trakt_client.get_recommendations_movies, "movie", "trakt-rec-movie"),
-        ("shows", trakt_client.get_recommendations_shows, "tv", "trakt-rec-series"),
+    for media_label, watched_ids, media_type, slot in [
+        ("movies", watched_movie_ids, "movie", "rec-movie"),
+        ("shows", watched_show_ids, "tv", "rec-series"),
     ]:
         try:
-            recs = await fetch_fn(access_token, limit=40)
-            tmdb_ids = trakt_client.extract_tmdb_ids(
-                recs, "movie" if media_type == "movie" else "show"
+            tmdb_ids = find_recommendations_by_taste(
+                db,
+                watched_tmdb_ids=watched_ids,
+                media_type=media_type,
+                limit=100,
             )
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
@@ -247,12 +310,12 @@ async def sync_user_catalogs(
                     name="Recommended For You",
                     media_type=media_type,
                     tmdb_ids=tmdb_ids,
-                    generation_method="trakt_recommendations",
+                    generation_method="tag_recommendations",
                 )
                 catalogs_created += 1
-                logger.info(f"  Trakt recs ({media_label}): {len(tmdb_ids)} items")
+                logger.info(f"  Tag recs ({media_label}): {len(tmdb_ids)} items")
         except Exception as e:
-            logger.warning(f"  Trakt recs ({media_label}) failed: {e}")
+            logger.warning(f"  Tag recs ({media_label}) failed: {e}")
 
     # ------------------------------------------------------------------
     # Step 4: "Trending Now" — what the Trakt community is watching
@@ -262,7 +325,7 @@ async def sync_user_catalogs(
         ("shows", trakt_client.get_trending_shows, "tv", "trakt-trending-series"),
     ]:
         try:
-            items = await fetch_fn(access_token, limit=40)
+            items = await fetch_fn(access_token, limit=100)
             tmdb_ids = trakt_client.extract_tmdb_ids(
                 items, "movie" if media_type == "movie" else "show"
             )
@@ -293,7 +356,7 @@ async def sync_user_catalogs(
         ("shows", trakt_client.get_popular_weekly_shows, "tv", "trakt-popular-series"),
     ]:
         try:
-            items = await fetch_fn(access_token, limit=40)
+            items = await fetch_fn(access_token, limit=100)
             tmdb_ids = trakt_client.extract_tmdb_ids(
                 items, "movie" if media_type == "movie" else "show"
             )
@@ -310,6 +373,63 @@ async def sync_user_catalogs(
                 logger.info(f"  Popular ({media_label}): {len(tmdb_ids)} items")
         except Exception as e:
             logger.warning(f"  Popular ({media_label}) failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Step 6: "Most Popular" — all-time popular on Trakt
+    # ------------------------------------------------------------------
+    for media_label, fetch_fn, media_type, slot in [
+        ("movies", trakt_client.get_popular_movies, "movie", "most-popular-movie"),
+        ("shows", trakt_client.get_popular_shows, "tv", "most-popular-series"),
+    ]:
+        try:
+            items = await fetch_fn(access_token, limit=100)
+            tmdb_ids = trakt_client.extract_tmdb_ids(
+                items, "movie" if media_type == "movie" else "show"
+            )
+            if tmdb_ids:
+                catalog_gen.save_user_catalog(
+                    user_id=user.id,
+                    slot_id=slot,
+                    name="Most Popular",
+                    media_type=media_type,
+                    tmdb_ids=tmdb_ids,
+                    generation_method="trakt_popular",
+                )
+                catalogs_created += 1
+                logger.info(f"  Most Popular ({media_label}): {len(tmdb_ids)} items")
+        except Exception as e:
+            logger.warning(f"  Most Popular ({media_label}) failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Step 7: "Most Anticipated" — upcoming movies/shows people want
+    # ------------------------------------------------------------------
+    for media_label, fetch_fn, media_type, slot in [
+        (
+            "movies",
+            trakt_client.get_anticipated_movies,
+            "movie",
+            "anticipated-movie",
+        ),
+        ("shows", trakt_client.get_anticipated_shows, "tv", "anticipated-series"),
+    ]:
+        try:
+            items = await fetch_fn(access_token, limit=100)
+            tmdb_ids = trakt_client.extract_tmdb_ids(
+                items, "movie" if media_type == "movie" else "show"
+            )
+            if tmdb_ids:
+                catalog_gen.save_user_catalog(
+                    user_id=user.id,
+                    slot_id=slot,
+                    name="Most Anticipated",
+                    media_type=media_type,
+                    tmdb_ids=tmdb_ids,
+                    generation_method="trakt_anticipated",
+                )
+                catalogs_created += 1
+                logger.info(f"  Anticipated ({media_label}): {len(tmdb_ids)} items")
+        except Exception as e:
+            logger.warning(f"  Anticipated ({media_label}) failed: {e}")
 
     # ------------------------------------------------------------------
     # Done — update sync timestamp

@@ -231,9 +231,12 @@ class CatalogGenerator:
         elif catalog_method == "hidden_gems":
             return self._generate_hidden_gems(user_id, limit)
         elif catalog_method in (
+            "tag_recommendations",
             "trakt_recommendations",
             "trakt_trending",
             "trakt_popular_weekly",
+            "trakt_popular",
+            "trakt_anticipated",
         ):
             return self._generate_from_tmdb_ids(params, limit)
         else:
