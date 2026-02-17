@@ -460,10 +460,48 @@ def _serve_catalog(items: list, catalog_id: str, catalog_type: str, skip: int):
     return response
 
 
+def _parse_extras(extra_str: str) -> dict:
+    """Parse Stremio path-based extras like 'skip=100&genre=Action' into a dict."""
+    params: dict = {}
+    for part in extra_str.split("&"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            params[k] = v
+    return params
+
+
 @app.get("/catalog/{catalog_type}/{catalog_id}.json")
 async def bare_catalog_blocked(catalog_type: str, catalog_id: str):
     """Block bare /catalog/ — install token required."""
     raise HTTPException(status_code=404, detail="Not found")
+
+
+@app.get("/catalog/{catalog_type}/{catalog_id}/{extra}.json")
+async def bare_catalog_extra_blocked(catalog_type: str, catalog_id: str, extra: str):
+    """Block bare /catalog/ with extras — install token required."""
+    raise HTTPException(status_code=404, detail="Not found")
+
+
+@app.get("/{user_key}/catalog/{catalog_type}/{catalog_id}/{extra}.json")
+async def catalog_with_extra(
+    user_key: str,
+    catalog_type: str,
+    catalog_id: str,
+    extra: str,
+    db: Session = Depends(get_db_dependency),
+):
+    """Catalog endpoint that handles Stremio path-based extras (e.g. skip=100).
+
+    Some Stremio clients pass extras as a path segment:
+      /{key}/catalog/{type}/{id}/skip=100.json
+    instead of as a query parameter:
+      /{key}/catalog/{type}/{id}.json?skip=100
+    """
+    params = _parse_extras(extra)
+    skip = int(params.get("skip", 0))
+    if skip < 0:
+        skip = 0
+    return await catalog(user_key, catalog_type, catalog_id, skip, db)
 
 
 @app.get("/{user_key}/catalog/{catalog_type}/{catalog_id}.json")
