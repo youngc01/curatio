@@ -25,7 +25,14 @@ from app.database import (
     init_database,
     check_database_connection,
 )
-from app.models import User, UniversalCategory, UserCatalog, OAuthState, InviteCode, AdminSetting
+from app.models import (
+    User,
+    UniversalCategory,
+    UserCatalog,
+    OAuthState,
+    InviteCode,
+    AdminSetting,
+)
 from app.catalog_generator import CatalogGenerator
 from app.trakt_client import trakt_client
 from app.crypto import encrypt_token, decrypt_token
@@ -210,9 +217,7 @@ async def bare_manifest_blocked():
 
 
 @app.get("/{user_key}/manifest.json")
-async def manifest(
-    user_key: str, db: Session = Depends(get_db_dependency)
-):
+async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
     """
     Stremio manifest endpoint.
 
