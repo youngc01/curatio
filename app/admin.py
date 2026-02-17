@@ -57,6 +57,7 @@ def _run_daily_sync(run_daily_update):
     finally:
         loop.close()
 
+
 # Active build task (in-memory, intentionally not persisted)
 _active_build_task: Optional[asyncio.Task] = None
 SESSION_DURATION = timedelta(hours=24)
@@ -1011,9 +1012,7 @@ async def regenerate_catalogs(request: Request, _=Depends(verify_admin)):
 async def list_invites(request: Request, _=Depends(verify_admin)):
     """List all invite codes."""
     with get_db() as db:
-        codes = (
-            db.query(InviteCode).order_by(InviteCode.created_at.desc()).all()
-        )
+        codes = db.query(InviteCode).order_by(InviteCode.created_at.desc()).all()
         return [
             {
                 "code": c.code,
