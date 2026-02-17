@@ -7,10 +7,11 @@ Flow: Trakt tells us WHAT they watched → tag DB powers the recommendations.
 Generates Netflix/Prime/HBO-style catalog rows:
   1. "Because You Watched [Title]" x5  (tag-based similarity)
   2. "Recommended For You"             (tag-based taste profile)
-  3. "Trending Now"                    (Trakt community)
-  4. "Popular This Week"               (Trakt community)
-  5. "Most Popular"                    (Trakt all-time)
-  6. "Most Anticipated"                (Trakt community wishlists)
+  3. "Top 10 Today"                    (daily most-watched, ranked 1-10)
+  4. "Trending Now"                    (Trakt community)
+  5. "Popular"                         (Trakt all-time favorites)
+
+Only digitally-released content — no anticipated/unreleased titles.
 """
 
 import asyncio
@@ -42,14 +43,12 @@ SLOT_ORDER = {
     "byw-5": 5,
     "rec-movie": 6,
     "rec-series": 7,
-    "trakt-trending-movie": 8,
-    "trakt-trending-series": 9,
-    "trakt-popular-movie": 10,
-    "trakt-popular-series": 11,
-    "most-popular-movie": 12,
-    "most-popular-series": 13,
-    "anticipated-movie": 14,
-    "anticipated-series": 15,
+    "top10-movie": 8,
+    "top10-series": 9,
+    "trakt-trending-movie": 10,
+    "trakt-trending-series": 11,
+    "popular-movie": 12,
+    "popular-series": 13,
 }
 
 
@@ -344,19 +343,14 @@ async def sync_user_catalogs(
             logger.warning(f"  Trending ({media_label}) failed: {e}")
 
     # ------------------------------------------------------------------
-    # Step 5: "Popular This Week" — most watched on Trakt this week
+    # Step 5: "Top 10 Today" — most watched today (ranked, not shuffled)
     # ------------------------------------------------------------------
     for media_label, fetch_fn, media_type, slot in [
-        (
-            "movies",
-            trakt_client.get_popular_weekly_movies,
-            "movie",
-            "trakt-popular-movie",
-        ),
-        ("shows", trakt_client.get_popular_weekly_shows, "tv", "trakt-popular-series"),
+        ("movies", trakt_client.get_watched_daily_movies, "movie", "top10-movie"),
+        ("shows", trakt_client.get_watched_daily_shows, "tv", "top10-series"),
     ]:
         try:
-            items = await fetch_fn(access_token, limit=100)
+            items = await fetch_fn(access_token, limit=10)
             tmdb_ids = trakt_client.extract_tmdb_ids(
                 items, "movie" if media_type == "movie" else "show"
             )
@@ -364,22 +358,22 @@ async def sync_user_catalogs(
                 catalog_gen.save_user_catalog(
                     user_id=user.id,
                     slot_id=slot,
-                    name="Popular This Week",
+                    name="Top 10 Today",
                     media_type=media_type,
                     tmdb_ids=tmdb_ids,
-                    generation_method="trakt_popular_weekly",
+                    generation_method="trakt_top10_daily",
                 )
                 catalogs_created += 1
-                logger.info(f"  Popular ({media_label}): {len(tmdb_ids)} items")
+                logger.info(f"  Top 10 ({media_label}): {len(tmdb_ids)} items")
         except Exception as e:
-            logger.warning(f"  Popular ({media_label}) failed: {e}")
+            logger.warning(f"  Top 10 ({media_label}) failed: {e}")
 
     # ------------------------------------------------------------------
-    # Step 6: "Most Popular" — all-time popular on Trakt
+    # Step 6: "Popular" — all-time popular on Trakt
     # ------------------------------------------------------------------
     for media_label, fetch_fn, media_type, slot in [
-        ("movies", trakt_client.get_popular_movies, "movie", "most-popular-movie"),
-        ("shows", trakt_client.get_popular_shows, "tv", "most-popular-series"),
+        ("movies", trakt_client.get_popular_movies, "movie", "popular-movie"),
+        ("shows", trakt_client.get_popular_shows, "tv", "popular-series"),
     ]:
         try:
             items = await fetch_fn(access_token, limit=100)
@@ -390,46 +384,15 @@ async def sync_user_catalogs(
                 catalog_gen.save_user_catalog(
                     user_id=user.id,
                     slot_id=slot,
-                    name="Most Popular",
+                    name="Popular",
                     media_type=media_type,
                     tmdb_ids=tmdb_ids,
                     generation_method="trakt_popular",
                 )
                 catalogs_created += 1
-                logger.info(f"  Most Popular ({media_label}): {len(tmdb_ids)} items")
+                logger.info(f"  Popular ({media_label}): {len(tmdb_ids)} items")
         except Exception as e:
-            logger.warning(f"  Most Popular ({media_label}) failed: {e}")
-
-    # ------------------------------------------------------------------
-    # Step 7: "Most Anticipated" — upcoming movies/shows people want
-    # ------------------------------------------------------------------
-    for media_label, fetch_fn, media_type, slot in [
-        (
-            "movies",
-            trakt_client.get_anticipated_movies,
-            "movie",
-            "anticipated-movie",
-        ),
-        ("shows", trakt_client.get_anticipated_shows, "tv", "anticipated-series"),
-    ]:
-        try:
-            items = await fetch_fn(access_token, limit=100)
-            tmdb_ids = trakt_client.extract_tmdb_ids(
-                items, "movie" if media_type == "movie" else "show"
-            )
-            if tmdb_ids:
-                catalog_gen.save_user_catalog(
-                    user_id=user.id,
-                    slot_id=slot,
-                    name="Most Anticipated",
-                    media_type=media_type,
-                    tmdb_ids=tmdb_ids,
-                    generation_method="trakt_anticipated",
-                )
-                catalogs_created += 1
-                logger.info(f"  Anticipated ({media_label}): {len(tmdb_ids)} items")
-        except Exception as e:
-            logger.warning(f"  Anticipated ({media_label}) failed: {e}")
+            logger.warning(f"  Popular ({media_label}) failed: {e}")
 
     # ------------------------------------------------------------------
     # Done — update sync timestamp

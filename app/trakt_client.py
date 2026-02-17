@@ -257,40 +257,6 @@ class TraktClient:
             logger.error(f"Failed to fetch history: {e}")
             return []
 
-    async def get_recommendations_movies(
-        self, access_token: str, limit: int = 100
-    ) -> List[Dict]:
-        """Get personalized movie recommendations from Trakt."""
-        try:
-            response = await self._request(
-                "GET",
-                "/recommendations/movies",
-                access_token,
-                params={"limit": limit, "extended": "full"},
-            )
-            logger.info(f"Fetched {len(response)} movie recommendations")
-            return response
-        except Exception as e:
-            logger.error(f"Failed to fetch movie recommendations: {e}")
-            return []
-
-    async def get_recommendations_shows(
-        self, access_token: str, limit: int = 100
-    ) -> List[Dict]:
-        """Get personalized show recommendations from Trakt."""
-        try:
-            response = await self._request(
-                "GET",
-                "/recommendations/shows",
-                access_token,
-                params={"limit": limit, "extended": "full"},
-            )
-            logger.info(f"Fetched {len(response)} show recommendations")
-            return response
-        except Exception as e:
-            logger.error(f"Failed to fetch show recommendations: {e}")
-            return []
-
     async def get_trending_movies(
         self, access_token: str, limit: int = 40
     ) -> List[Dict]:
@@ -325,38 +291,38 @@ class TraktClient:
             logger.error(f"Failed to fetch trending shows: {e}")
             return []
 
-    async def get_popular_weekly_movies(
-        self, access_token: str, limit: int = 40
+    async def get_watched_daily_movies(
+        self, access_token: str, limit: int = 10
     ) -> List[Dict]:
-        """Get most watched movies this week (by unique viewers)."""
+        """Get most watched movies today (by unique viewers)."""
         try:
             response = await self._request(
                 "GET",
-                "/movies/watched/weekly",
+                "/movies/watched/daily",
                 access_token,
                 params={"limit": limit, "extended": "full"},
             )
-            logger.info(f"Fetched {len(response)} popular weekly movies")
+            logger.info(f"Fetched {len(response)} daily watched movies")
             return response
         except Exception as e:
-            logger.error(f"Failed to fetch popular weekly movies: {e}")
+            logger.error(f"Failed to fetch daily watched movies: {e}")
             return []
 
-    async def get_popular_weekly_shows(
-        self, access_token: str, limit: int = 40
+    async def get_watched_daily_shows(
+        self, access_token: str, limit: int = 10
     ) -> List[Dict]:
-        """Get most watched shows this week (by unique viewers)."""
+        """Get most watched shows today (by unique viewers)."""
         try:
             response = await self._request(
                 "GET",
-                "/shows/watched/weekly",
+                "/shows/watched/daily",
                 access_token,
                 params={"limit": limit, "extended": "full"},
             )
-            logger.info(f"Fetched {len(response)} popular weekly shows")
+            logger.info(f"Fetched {len(response)} daily watched shows")
             return response
         except Exception as e:
-            logger.error(f"Failed to fetch popular weekly shows: {e}")
+            logger.error(f"Failed to fetch daily watched shows: {e}")
             return []
 
     async def get_popular_movies(
@@ -389,40 +355,6 @@ class TraktClient:
             return response
         except Exception as e:
             logger.error(f"Failed to fetch popular shows: {e}")
-            return []
-
-    async def get_anticipated_movies(
-        self, access_token: str, limit: int = 40
-    ) -> List[Dict]:
-        """Get most anticipated movies (based on Trakt list adds)."""
-        try:
-            response = await self._request(
-                "GET",
-                "/movies/anticipated",
-                access_token,
-                params={"limit": limit, "extended": "full"},
-            )
-            logger.info(f"Fetched {len(response)} anticipated movies")
-            return response
-        except Exception as e:
-            logger.error(f"Failed to fetch anticipated movies: {e}")
-            return []
-
-    async def get_anticipated_shows(
-        self, access_token: str, limit: int = 40
-    ) -> List[Dict]:
-        """Get most anticipated shows (based on Trakt list adds)."""
-        try:
-            response = await self._request(
-                "GET",
-                "/shows/anticipated",
-                access_token,
-                params={"limit": limit, "extended": "full"},
-            )
-            logger.info(f"Fetched {len(response)} anticipated shows")
-            return response
-        except Exception as e:
-            logger.error(f"Failed to fetch anticipated shows: {e}")
             return []
 
     def extract_tmdb_ids(self, trakt_items: List[Dict], media_type: str) -> List[int]:
