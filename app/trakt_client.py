@@ -257,6 +257,74 @@ class TraktClient:
             logger.error(f"Failed to fetch history: {e}")
             return []
 
+    async def get_recommendations_movies(
+        self, access_token: str, limit: int = 100
+    ) -> List[Dict]:
+        """Get personalized movie recommendations from Trakt."""
+        try:
+            response = await self._request(
+                "GET",
+                "/recommendations/movies",
+                access_token,
+                params={"limit": limit, "extended": "full"},
+            )
+            logger.info(f"Fetched {len(response)} movie recommendations")
+            return response
+        except Exception as e:
+            logger.error(f"Failed to fetch movie recommendations: {e}")
+            return []
+
+    async def get_recommendations_shows(
+        self, access_token: str, limit: int = 100
+    ) -> List[Dict]:
+        """Get personalized show recommendations from Trakt."""
+        try:
+            response = await self._request(
+                "GET",
+                "/recommendations/shows",
+                access_token,
+                params={"limit": limit, "extended": "full"},
+            )
+            logger.info(f"Fetched {len(response)} show recommendations")
+            return response
+        except Exception as e:
+            logger.error(f"Failed to fetch show recommendations: {e}")
+            return []
+
+    async def get_watchlist_movies(
+        self, access_token: str, limit: int = 100
+    ) -> List[Dict]:
+        """Get user's movie watchlist."""
+        try:
+            response = await self._request(
+                "GET",
+                "/users/me/watchlist/movies",
+                access_token,
+                params={"extended": "full"},
+            )
+            logger.info(f"Fetched {len(response)} watchlist movies")
+            return response[:limit]
+        except Exception as e:
+            logger.error(f"Failed to fetch movie watchlist: {e}")
+            return []
+
+    async def get_watchlist_shows(
+        self, access_token: str, limit: int = 100
+    ) -> List[Dict]:
+        """Get user's show watchlist."""
+        try:
+            response = await self._request(
+                "GET",
+                "/users/me/watchlist/shows",
+                access_token,
+                params={"extended": "full"},
+            )
+            logger.info(f"Fetched {len(response)} watchlist shows")
+            return response[:limit]
+        except Exception as e:
+            logger.error(f"Failed to fetch show watchlist: {e}")
+            return []
+
     def extract_tmdb_ids(self, trakt_items: List[Dict], media_type: str) -> List[int]:
         """
         Extract TMDB IDs from Trakt response.

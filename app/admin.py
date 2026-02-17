@@ -21,12 +21,15 @@ from app.database import get_db
 from app.models import (
     AdminSetting,
     AdminSession,
+    InviteCode,
     Tag,
     MovieTag,
     MediaMetadata,
     UniversalCategory,
     UniversalCatalogContent,
     User,
+    UserCatalog,
+    UserCatalogContent,
     TaggingJob,
 )
 
@@ -975,6 +978,124 @@ async def regenerate_catalogs(request: Request, _=Depends(verify_admin)):
     return {"status": "ok", "total_catalog_items": new_total}
 
 
+# ---- Invite Codes ----
+
+
+@router.get("/api/invites")
+async def list_invites(request: Request, _=Depends(verify_admin)):
+    """List all invite codes."""
+    with get_db() as db:
+        codes = (
+            db.query(InviteCode).order_by(InviteCode.created_at.desc()).all()
+        )
+        return [
+            {
+                "code": c.code,
+                "label": c.label,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+                "expires_at": c.expires_at.isoformat() if c.expires_at else None,
+                "is_used": c.is_used,
+                "used_at": c.used_at.isoformat() if c.used_at else None,
+                "used_by": c.used_by,
+            }
+            for c in codes
+        ]
+
+
+@router.post("/api/invites")
+async def create_invite(request: Request, _=Depends(verify_admin)):
+    """Generate a new one-time invite code."""
+    body = await request.json()
+    label = body.get("label", "")
+    expires_hours = body.get("expires_hours")  # None = never expires
+
+    code = secrets.token_urlsafe(24)
+
+    expires_at = None
+    if expires_hours:
+        expires_at = datetime.utcnow() + timedelta(hours=int(expires_hours))
+
+    with get_db() as db:
+        db.add(
+            InviteCode(
+                code=code,
+                label=label,
+                expires_at=expires_at,
+            )
+        )
+
+    return {"code": code, "expires_at": expires_at.isoformat() if expires_at else None}
+
+
+@router.delete("/api/invites/{code}")
+async def delete_invite(code: str, request: Request, _=Depends(verify_admin)):
+    """Delete an invite code."""
+    with get_db() as db:
+        deleted = db.query(InviteCode).filter(InviteCode.code == code).delete()
+        if not deleted:
+            raise HTTPException(404, "Invite code not found")
+    return {"status": "ok"}
+
+
+# ---- Trakt Users ----
+
+
+@router.get("/api/users")
+async def list_users(request: Request, _=Depends(verify_admin)):
+    """List all Trakt-authenticated users."""
+    with get_db() as db:
+        users = db.query(User).order_by(User.created_at.desc()).all()
+
+        user_list = []
+        for u in users:
+            catalog_count = (
+                db.query(func.count(UserCatalog.id))
+                .filter(UserCatalog.user_id == u.id, UserCatalog.is_active.is_(True))
+                .scalar()
+                or 0
+            )
+            user_list.append(
+                {
+                    "id": u.id,
+                    "trakt_username": u.trakt_username,
+                    "trakt_user_id": u.trakt_user_id,
+                    "user_key": u.user_key[:8] + "...",
+                    "is_active": u.is_active,
+                    "created_at": u.created_at.isoformat() if u.created_at else None,
+                    "last_login": u.last_login.isoformat() if u.last_login else None,
+                    "last_sync": u.last_sync.isoformat() if u.last_sync else None,
+                    "catalog_count": catalog_count,
+                }
+            )
+
+        return user_list
+
+
+@router.post("/api/users/{user_id}/toggle")
+async def toggle_user(user_id: int, request: Request, _=Depends(verify_admin)):
+    """Enable or disable a user."""
+    with get_db() as db:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+        user.is_active = not user.is_active
+        new_status = user.is_active
+        db.commit()
+    return {"status": "ok", "is_active": new_status}
+
+
+@router.delete("/api/users/{user_id}")
+async def delete_user(user_id: int, request: Request, _=Depends(verify_admin)):
+    """Delete a user and their catalogs."""
+    with get_db() as db:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+        db.delete(user)
+        db.commit()
+    return {"status": "ok"}
+
+
 # ---- HTML Page ----
 
 
@@ -1135,6 +1256,8 @@ tr:last-child td{border-bottom:none}
 
   <div class="tab-nav">
     <button class="tab-btn active" data-tab="overview">Overview</button>
+    <button class="tab-btn" data-tab="invites">Invites</button>
+    <button class="tab-btn" data-tab="users">Users</button>
     <button class="tab-btn" data-tab="settings">Settings</button>
     <button class="tab-btn" data-tab="build">Build</button>
     <button class="tab-btn" data-tab="schedule">Schedule</button>
@@ -1176,6 +1299,54 @@ tr:last-child td{border-bottom:none}
         <table>
           <thead><tr><th>Type</th><th>Status</th><th>Started</th><th>Processed</th><th>Failed</th></tr></thead>
           <tbody id="jobs-tbody"><tr><td colspan="5" style="color:#8b949e">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- INVITES TAB -->
+    <div class="tab-panel" id="tab-invites">
+      <div class="card">
+        <h3>Generate Invite Code</h3>
+        <p style="color:#8b949e;font-size:13px;margin-bottom:20px">
+          Create one-time invite codes for users to connect their Trakt accounts. Each code can only be used once.
+        </p>
+        <div class="card-row">
+          <div class="form-group">
+            <label>Label (optional)</label>
+            <input type="text" id="invite-label" placeholder="e.g. For John">
+          </div>
+          <div class="form-group">
+            <label>Expires After (hours)</label>
+            <input type="number" id="invite-expires" placeholder="Leave blank for no expiry" min="1">
+            <div class="hint">Leave empty for codes that never expire.</div>
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="createInvite()">Generate Invite Code</button>
+        <div id="invite-result" style="display:none;margin-top:16px">
+          <div class="alert alert-success" style="font-family:monospace;font-size:16px;word-break:break-all;user-select:all" id="invite-code-display"></div>
+          <div class="hint" style="margin-top:8px">Share this code with the user. It can only be used once.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Invite Codes</h3>
+        <table>
+          <thead><tr><th>Code</th><th>Label</th><th>Status</th><th>Created</th><th>Expires</th><th>Used By</th><th>Actions</th></tr></thead>
+          <tbody id="invites-tbody"><tr><td colspan="7" style="color:#8b949e">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- USERS TAB -->
+    <div class="tab-panel" id="tab-users">
+      <div class="card">
+        <h3>Trakt Users</h3>
+        <p style="color:#8b949e;font-size:13px;margin-bottom:20px">
+          All users who have connected their Trakt accounts.
+        </p>
+        <table>
+          <thead><tr><th>Username</th><th>Trakt ID</th><th>User Key</th><th>Status</th><th>Created</th><th>Last Login</th><th>Last Sync</th><th>Catalogs</th><th>Actions</th></tr></thead>
+          <tbody id="users-tbody"><tr><td colspan="9" style="color:#8b949e">Loading...</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -1465,7 +1636,7 @@ async function checkAuth() {
 
 // ---- Data Loading ----
 async function loadAll() {
-  await Promise.all([loadStats(), loadSettings(), loadBuildStatus()]);
+  await Promise.all([loadStats(), loadSettings(), loadBuildStatus(), loadInvites(), loadUsers()]);
   // If a build is running, start polling logs automatically
   try {
     const s = await api('GET', '/admin/api/build/status');
@@ -1838,6 +2009,120 @@ async function regenerateCatalogs() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Regenerate Catalogs';
+  }
+}
+
+// ---- Invites ----
+async function loadInvites() {
+  try {
+    const invites = await api('GET', '/admin/api/invites');
+    const tbody = document.getElementById('invites-tbody');
+    if (invites.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" style="color:#8b949e">No invite codes yet. Generate one above.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = invites.map(function(inv) {
+      var status = inv.is_used
+        ? '<span class="badge badge-completed">Used</span>'
+        : (inv.expires_at && new Date(inv.expires_at + 'Z') < new Date()
+          ? '<span class="badge badge-failed">Expired</span>'
+          : '<span class="badge badge-running">Active</span>');
+      var codeShort = inv.code.length > 16 ? inv.code.substring(0, 16) + '...' : inv.code;
+      return '<tr>' +
+        '<td style="font-family:monospace;font-size:12px" title="' + inv.code + '">' + codeShort + '</td>' +
+        '<td>' + (inv.label || '-') + '</td>' +
+        '<td>' + status + '</td>' +
+        '<td>' + fmtDate(inv.created_at) + '</td>' +
+        '<td>' + (inv.expires_at ? fmtDate(inv.expires_at) : 'Never') + '</td>' +
+        '<td>' + (inv.used_by || '-') + '</td>' +
+        '<td><button class="btn btn-danger btn-sm" onclick="deleteInvite(\'' + inv.code + '\')">Delete</button></td>' +
+        '</tr>';
+    }).join('');
+  } catch(e) { if (e.message !== 'auth') console.error(e); }
+}
+
+async function createInvite() {
+  var label = document.getElementById('invite-label').value.trim();
+  var expiresHours = document.getElementById('invite-expires').value;
+  var data = { label: label };
+  if (expiresHours) data.expires_hours = parseInt(expiresHours);
+
+  try {
+    var res = await api('POST', '/admin/api/invites', data);
+    document.getElementById('invite-code-display').textContent = res.code;
+    document.getElementById('invite-result').style.display = 'block';
+    document.getElementById('invite-label').value = '';
+    document.getElementById('invite-expires').value = '';
+    toast('Invite code generated', 'success');
+    loadInvites();
+  } catch(e) {
+    toast('Failed to generate invite: ' + e.message, 'error');
+  }
+}
+
+async function deleteInvite(code) {
+  if (!confirm('Delete this invite code?')) return;
+  try {
+    await api('DELETE', '/admin/api/invites/' + encodeURIComponent(code));
+    toast('Invite code deleted', 'success');
+    loadInvites();
+  } catch(e) {
+    toast('Failed to delete: ' + e.message, 'error');
+  }
+}
+
+// ---- Users ----
+async function loadUsers() {
+  try {
+    var users = await api('GET', '/admin/api/users');
+    var tbody = document.getElementById('users-tbody');
+    if (users.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="9" style="color:#8b949e">No users yet. Share invite codes to get started.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = users.map(function(u) {
+      var status = u.is_active
+        ? '<span class="badge badge-completed">Active</span>'
+        : '<span class="badge badge-failed">Disabled</span>';
+      var toggleLabel = u.is_active ? 'Disable' : 'Enable';
+      var toggleClass = u.is_active ? 'btn-secondary' : 'btn-primary';
+      return '<tr>' +
+        '<td><strong>' + (u.trakt_username || '-') + '</strong></td>' +
+        '<td>' + u.trakt_user_id + '</td>' +
+        '<td style="font-family:monospace;font-size:12px">' + u.user_key + '</td>' +
+        '<td>' + status + '</td>' +
+        '<td>' + fmtDate(u.created_at) + '</td>' +
+        '<td>' + fmtDate(u.last_login) + '</td>' +
+        '<td>' + (u.last_sync ? fmtDate(u.last_sync) : 'Never') + '</td>' +
+        '<td>' + u.catalog_count + '</td>' +
+        '<td style="white-space:nowrap">' +
+          '<button class="btn ' + toggleClass + ' btn-sm" onclick="toggleUser(' + u.id + ')" style="margin-right:4px">' + toggleLabel + '</button>' +
+          '<button class="btn btn-danger btn-sm" onclick="deleteUser(' + u.id + ',\'' + (u.trakt_username || '') + '\')">Delete</button>' +
+        '</td>' +
+        '</tr>';
+    }).join('');
+  } catch(e) { if (e.message !== 'auth') console.error(e); }
+}
+
+async function toggleUser(userId) {
+  try {
+    var res = await api('POST', '/admin/api/users/' + userId + '/toggle');
+    toast('User ' + (res.is_active ? 'enabled' : 'disabled'), 'success');
+    loadUsers();
+  } catch(e) {
+    toast('Failed: ' + e.message, 'error');
+  }
+}
+
+async function deleteUser(userId, username) {
+  if (!confirm('Delete user ' + (username || userId) + '? This will remove all their personalized catalogs.')) return;
+  try {
+    await api('DELETE', '/admin/api/users/' + userId);
+    toast('User deleted', 'success');
+    loadUsers();
+    loadStats();
+  } catch(e) {
+    toast('Failed: ' + e.message, 'error');
   }
 }
 

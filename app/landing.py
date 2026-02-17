@@ -116,12 +116,12 @@ footer a:hover{{color:#e5e5e5}}
   <!-- Trakt Connect Card -->
   <div class="card">
     <h2>Connect Trakt Account</h2>
-    <p class="subtitle">Link your Trakt history to unlock personalized recommendations tailored to your taste.</p>
+    <p class="subtitle">Use your invite code to link Trakt and unlock personalized recommendations tailored to your taste.</p>
 
     <form id="trakt-form" onsubmit="return startTraktAuth(event)">
       <div class="input-group">
-        <label for="password">Addon Password</label>
-        <input type="password" id="password" name="password" placeholder="Enter your addon password" required autocomplete="current-password">
+        <label for="invite-code">Invite Code</label>
+        <input type="text" id="invite-code" name="invite" placeholder="Enter your invite code" required autocomplete="off">
       </div>
       <button class="btn btn-trakt" type="submit">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
@@ -163,21 +163,21 @@ footer a:hover{{color:#e5e5e5}}
 <script>
 function startTraktAuth(e) {{
   e.preventDefault();
-  var pw = document.getElementById('password').value;
-  if (!pw) return false;
+  var code = document.getElementById('invite-code').value;
+  if (!code) return false;
   var errEl = document.getElementById('error-msg');
   errEl.style.display = 'none';
 
-  // Verify password first, then redirect
-  fetch('/auth/start?password=' + encodeURIComponent(pw), {{
+  // Verify invite code first, then redirect
+  fetch('/auth/start?invite=' + encodeURIComponent(code), {{
     method: 'GET',
     redirect: 'manual'
   }}).then(function(resp) {{
     if (resp.type === 'opaqueredirect' || resp.status === 307 || resp.status === 302 || resp.status === 303) {{
       // Redirect to Trakt OAuth
-      window.location.href = '/auth/start?password=' + encodeURIComponent(pw);
+      window.location.href = '/auth/start?invite=' + encodeURIComponent(code);
     }} else if (resp.status === 403) {{
-      errEl.textContent = 'Invalid password. Please try again.';
+      errEl.textContent = 'Invalid or expired invite code. Please try again.';
       errEl.style.display = 'block';
     }} else {{
       return resp.json().then(function(data) {{
@@ -187,7 +187,7 @@ function startTraktAuth(e) {{
     }}
   }}).catch(function() {{
     // fetch with redirect:'manual' may throw — just navigate directly
-    window.location.href = '/auth/start?password=' + encodeURIComponent(pw);
+    window.location.href = '/auth/start?invite=' + encodeURIComponent(code);
   }});
 
   return false;

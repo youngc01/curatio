@@ -230,6 +230,10 @@ class CatalogGenerator:
             return self._generate_because_you_watched(user_id, params, limit)
         elif catalog_method == "hidden_gems":
             return self._generate_hidden_gems(user_id, limit)
+        elif catalog_method == "trakt_recommendations":
+            return self._generate_from_tmdb_ids(params, limit)
+        elif catalog_method == "trakt_watchlist":
+            return self._generate_from_tmdb_ids(params, limit)
         else:
             logger.warning(f"Unknown catalog method: {catalog_method}")
             return []
@@ -358,6 +362,18 @@ class CatalogGenerator:
         )
 
         return [r.tmdb_id for r in results]
+
+    def _generate_from_tmdb_ids(self, params: Dict, limit: int) -> List[int]:
+        """
+        Generate a catalog from a pre-fetched list of TMDB IDs.
+
+        Used for Trakt recommendations/watchlist where the IDs come
+        directly from the Trakt API rather than from tag matching.
+        """
+        tmdb_ids = params.get("tmdb_ids", [])
+        if not tmdb_ids:
+            return []
+        return tmdb_ids[:limit]
 
     def _generate_hidden_gems(self, user_id: int, limit: int) -> List[int]:
         """

@@ -25,7 +25,7 @@ from app.database import (
     init_database,
     check_database_connection,
 )
-from app.models import User, UniversalCategory, UserCatalog, OAuthState
+from app.models import User, UniversalCategory, UserCatalog, OAuthState, InviteCode
 from app.catalog_generator import CatalogGenerator
 from app.trakt_client import trakt_client
 from app.crypto import encrypt_token, decrypt_token
@@ -472,18 +472,35 @@ async def personalized_catalog(
 # OAuth endpoints for Trakt authentication
 @app.get("/auth/start")
 async def start_auth(
-    password: str = Query(..., description="Master password"),
+    invite: str = Query(None, description="One-time invite code"),
+    password: str = Query(None, description="Master password (legacy)"),
     db: Session = Depends(get_db_dependency),
 ):
     """
-    Start Trakt OAuth flow (requires master password).
+    Start Trakt OAuth flow.
 
-    Args:
-        password: Master password
+    Accepts either a one-time invite code (preferred) or the master password
+    (legacy fallback). Invite codes are consumed on successful Trakt callback.
     """
-    # Verify master password
-    if password != settings.master_password:
-        raise HTTPException(status_code=403, detail="Invalid master password")
+    code_value = invite or password
+    if not code_value:
+        raise HTTPException(status_code=403, detail="Invite code required")
+
+    # Check if it's a valid invite code first
+    invite_row = None
+    with get_db() as db_session:
+        invite_row = (
+            db_session.query(InviteCode)
+            .filter(InviteCode.code == code_value, InviteCode.is_used.is_(False))
+            .first()
+        )
+        if invite_row:
+            # Check expiry
+            if invite_row.expires_at and datetime.utcnow() > invite_row.expires_at:
+                raise HTTPException(status_code=403, detail="Invite code has expired")
+        elif code_value != settings.master_password:
+            # Not a valid invite code and not the master password
+            raise HTTPException(status_code=403, detail="Invalid invite code")
 
     # Generate state for CSRF protection and persist it
     state = secrets.token_urlsafe(32)
@@ -491,12 +508,20 @@ async def start_auth(
         # Clean up expired states (older than 10 minutes)
         cutoff = datetime.utcnow() - timedelta(minutes=10)
         db_session.query(OAuthState).filter(OAuthState.created_at < cutoff).delete()
+        # Store invite code in state so we can mark it used on callback
         db_session.add(OAuthState(state=state))
+
+    # Store the invite code in a temporary mapping so callback can mark it used
+    _pending_invite_codes[state] = code_value if invite_row else None
 
     # Get Trakt authorization URL
     auth_url = trakt_client.get_authorization_url(state)
 
     return RedirectResponse(url=auth_url)
+
+
+# Temporary mapping: OAuth state -> invite code (so callback can mark it used)
+_pending_invite_codes: dict[str, str | None] = {}
 
 
 @app.get("/api/auth/trakt/callback")
@@ -532,6 +557,9 @@ async def trakt_callback(
             status_code=400,
         )
 
+    # Retrieve pending invite code before consuming the state
+    pending_invite = _pending_invite_codes.pop(state, None)
+
     # Consume the state token (one-time use)
     db.query(OAuthState).filter(OAuthState.state == state).delete()
     db.commit()
@@ -547,6 +575,8 @@ async def trakt_callback(
         encrypted_access = encrypt_token(token_data["access_token"])
         encrypted_refresh = encrypt_token(token_data["refresh_token"])
         expires_at = datetime.utcnow() + timedelta(seconds=token_data["expires_in"])
+
+        trakt_username = profile.get("username", "")
 
         # Create or update user
         user = (
@@ -567,7 +597,7 @@ async def trakt_callback(
             user = User(
                 user_key=user_key,
                 trakt_user_id=str(profile["ids"]["slug"]),
-                trakt_username=profile.get("username"),
+                trakt_username=trakt_username,
                 trakt_access_token=encrypted_access,
                 trakt_refresh_token=encrypted_refresh,
                 trakt_token_expires_at=expires_at,
@@ -575,6 +605,20 @@ async def trakt_callback(
             db.add(user)
 
         db.commit()
+
+        # Mark invite code as used (if one was used)
+        if pending_invite:
+            with get_db() as inv_db:
+                inv = (
+                    inv_db.query(InviteCode)
+                    .filter(InviteCode.code == pending_invite)
+                    .first()
+                )
+                if inv:
+                    inv.is_used = True
+                    inv.used_at = datetime.utcnow()
+                    inv.used_by = trakt_username
+                    inv_db.commit()
 
         # Return success page
         manifest_url = f"{settings.base_url}/{user.user_key}/manifest.json"
