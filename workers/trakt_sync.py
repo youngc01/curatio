@@ -13,7 +13,7 @@ Generates Netflix/Prime/HBO-style catalog rows:
 
 import asyncio
 from datetime import datetime
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Set
 
 from loguru import logger
 from sqlalchemy import func
@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.models import User, UserCatalog, UserCatalogContent, MovieTag, MediaMetadata
+from app.models import User, MovieTag
 from app.trakt_client import trakt_client
 from app.catalog_generator import CatalogGenerator
 
@@ -342,7 +342,6 @@ def _pick_byw_seeds(
     for item in recent_history:
         movie = item.get("movie")
         show = item.get("show")
-        episode = item.get("episode")
 
         if movie:
             media = movie
