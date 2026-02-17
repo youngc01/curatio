@@ -29,7 +29,6 @@ from app.models import (
     UniversalCatalogContent,
     User,
     UserCatalog,
-    UserCatalogContent,
     TaggingJob,
 )
 
