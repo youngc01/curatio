@@ -2080,7 +2080,7 @@ async function loadInvites() {
         '<td>' + fmtDate(inv.created_at) + '</td>' +
         '<td>' + (inv.expires_at ? fmtDate(inv.expires_at) : 'Never') + '</td>' +
         '<td>' + (inv.used_by || '-') + '</td>' +
-        '<td><button class="btn btn-danger btn-sm" onclick="deleteInvite(\'' + inv.code + '\')">Delete</button></td>' +
+        '<td><button class="btn btn-danger btn-sm" onclick="deleteInvite(\\'' + inv.code + '\\')">Delete</button></td>' +
         '</tr>';
     }).join('');
   } catch(e) { if (e.message !== 'auth') console.error(e); }
@@ -2142,7 +2142,7 @@ async function loadUsers() {
         '<td>' + u.catalog_count + '</td>' +
         '<td style="white-space:nowrap">' +
           '<button class="btn ' + toggleClass + ' btn-sm" onclick="toggleUser(' + u.id + ')" style="margin-right:4px">' + toggleLabel + '</button>' +
-          '<button class="btn btn-danger btn-sm" onclick="deleteUser(' + u.id + ',\'' + (u.trakt_username || '') + '\')">Delete</button>' +
+          '<button class="btn btn-danger btn-sm" onclick="deleteUser(' + u.id + ',\\'' + (u.trakt_username || '') + '\\')">Delete</button>' +
         '</td>' +
         '</tr>';
     }).join('');
