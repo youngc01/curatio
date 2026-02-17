@@ -1628,17 +1628,28 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 });
 
 // ---- Auth ----
+let _checkAuthAbort = null;
+
 document.getElementById('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  // Abort any pending checkAuth request so its stale 401 cannot
+  // re-show the login screen after we successfully log in.
+  if (_checkAuthAbort) { _checkAuthAbort.abort(); _checkAuthAbort = null; }
+  const btn = e.target.querySelector('button');
   const pw = document.getElementById('login-password').value;
+  btn.disabled = true;
+  btn.textContent = 'Signing in...';
+  document.getElementById('login-error').textContent = '';
   try {
     await api('POST', '/admin/api/login', { password: pw });
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';
-    document.getElementById('login-error').textContent = '';
     loadAll();
   } catch (err) {
-    document.getElementById('login-error').textContent = 'Invalid password';
+    document.getElementById('login-error').textContent =
+      err.message === 'auth' ? 'Invalid password' : err.message;
+    btn.disabled = false;
+    btn.textContent = 'Sign In';
   }
 });
 
@@ -1650,12 +1661,22 @@ async function logout() {
 }
 
 async function checkAuth() {
+  // Use fetch directly (not api()) so a slow 401 response cannot
+  // trigger the global 401 handler and re-show the login screen
+  // after the user has already logged in via the form.
+  _checkAuthAbort = new AbortController();
   try {
-    await api('GET', '/admin/api/stats');
-    document.getElementById('login-screen').style.display = 'none';
-    document.getElementById('dashboard').style.display = 'block';
-    loadAll();
+    const res = await fetch('/admin/api/stats', {
+      credentials: 'same-origin',
+      signal: _checkAuthAbort.signal
+    });
+    if (res.ok) {
+      document.getElementById('login-screen').style.display = 'none';
+      document.getElementById('dashboard').style.display = 'block';
+      loadAll();
+    }
   } catch { /* show login */ }
+  finally { _checkAuthAbort = null; }
 }
 
 // ---- Data Loading ----
