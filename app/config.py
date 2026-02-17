@@ -50,7 +50,7 @@ class Settings(BaseSettings):
         24, description="Hours between personalized catalog refreshes"
     )
     personalized_catalog_count: int = Field(
-        10, description="Number of personalized catalogs per user"
+        14, description="Number of personalized catalogs per user"
     )
     universal_catalog_count: int = Field(40, description="Number of universal catalogs")
 

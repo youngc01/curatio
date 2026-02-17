@@ -24,7 +24,7 @@
 ## Features
 
 - **40 Universal Catalogs** -- Netflix-style semantic categories (Dark Crime Dramas, Cyberpunk Futures, Feel-Good Comedies, etc.)
-- **10 Personalized Catalogs** -- AI recommendations based on your Trakt watch history
+- **14 Personalized Catalogs** -- Up Next, Because You Watched, Recommended For You, Top 10 Today, Trending Now, and Popular — powered by Trakt + AI tags
 - **Gemini AI Tagging** -- Every title semantically tagged across mood, genre, era, and style
 - **One-Time Build** -- Tag 150,000 titles once, then serve catalogs at $0/month
 - **Admin Dashboard** -- Web UI to manage builds, monitor status, and configure settings
@@ -146,13 +146,20 @@ Curatio ships with 40 hand-designed categories spanning five tiers:
 
 Each catalog contains ~100 titles ranked by AI relevance.
 
-### Personalized Catalogs (10 per user)
+### Personalized Catalogs (14 per user)
 
-When connected to Trakt, users get catalogs like:
-- Top Picks for You
-- Because You Watched [Movie]
-- Hidden Gems We Think You'll Love
-- Trending in Your Taste
+When connected to Trakt, users get streaming-service-style catalog rows:
+
+| Row | Catalog | Description |
+|-----|---------|-------------|
+| 1 | **Up Next** | Series you've watched in the last 2 weeks — continue where you left off |
+| 2-6 | **Because You Watched [Title]** | 5 catalogs seeded from recent watches, powered by AI tag similarity |
+| 7-8 | **Recommended For You** | Movies and series matched to your taste profile (top tags from watch history) |
+| 9-10 | **Top 10 Today** | The 10 most-watched movies and series today, ranked (not shuffled) |
+| 11-12 | **Trending Now** | What the community is watching right now |
+| 13-14 | **Popular** | All-time favorites by rating and watch count |
+
+Only digitally-released content is shown — no unreleased or anticipated titles.
 
 ## Admin Dashboard
 
@@ -185,7 +192,8 @@ curatio/
 │   └── crypto.py            # Token encryption for Trakt credentials
 ├── workers/
 │   ├── initial_build.py     # One-time full tagging build (pause/resume aware)
-│   └── daily_update.py      # Daily new-release tagger
+│   ├── daily_update.py      # Daily new-release tagger
+│   └── trakt_sync.py        # Personalized catalog builder (Up Next, BYW, recs, trending)
 ├── tests/
 │   └── test_all.py          # Unit, integration & performance tests
 ├── assets/
@@ -247,7 +255,7 @@ All settings can be configured via `.env` or overridden at runtime through the A
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/manifest.json` | Universal manifest (40 catalogs) |
-| `GET` | `/{user_key}/manifest.json` | Personalized manifest (50 catalogs) |
+| `GET` | `/{user_key}/manifest.json` | Personalized manifest (54 catalogs) |
 | `GET` | `/catalog/{type}/{id}.json` | Universal catalog content |
 | `GET` | `/{user_key}/catalog/{type}/{id}.json` | Personalized catalog content |
 
