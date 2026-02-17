@@ -257,6 +257,38 @@ class TraktClient:
             logger.error(f"Failed to fetch history: {e}")
             return []
 
+    async def get_recent_show_history(
+        self, access_token: str, days: int = 14, limit: int = 100
+    ) -> List[Dict]:
+        """Get shows the user has watched in the last N days.
+
+        Returns history items ordered by most recent first.
+        Useful for building an 'Up Next' / 'Continue Watching' catalog.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        start_at = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z"
+        )
+
+        try:
+            response = await self._request(
+                "GET",
+                "/users/me/history/shows",
+                access_token,
+                params={
+                    "page": 1,
+                    "limit": limit,
+                    "start_at": start_at,
+                    "extended": "full",
+                },
+            )
+            logger.info(f"Fetched {len(response)} recent show history items")
+            return response  # type: ignore[return-value]
+        except Exception as e:
+            logger.error(f"Failed to fetch recent show history: {e}")
+            return []
+
     async def get_trending_movies(
         self, access_token: str, limit: int = 40
     ) -> List[Dict]:

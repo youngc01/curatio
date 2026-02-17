@@ -5,11 +5,12 @@ Uses the AI tag database for recommendations (not Trakt's /related endpoint).
 Flow: Trakt tells us WHAT they watched → tag DB powers the recommendations.
 
 Generates Netflix/Prime/HBO-style catalog rows:
-  1. "Because You Watched [Title]" x5  (tag-based similarity)
-  2. "Recommended For You"             (tag-based taste profile)
-  3. "Top 10 Today"                    (daily most-watched, ranked 1-10)
-  4. "Trending Now"                    (Trakt community)
-  5. "Popular"                         (Trakt all-time favorites)
+  1. "Up Next"                         (series watched in last 2 weeks)
+  2. "Because You Watched [Title]" x5  (tag-based similarity)
+  3. "Recommended For You"             (tag-based taste profile)
+  4. "Top 10 Today"                    (daily most-watched, ranked 1-10)
+  5. "Trending Now"                    (Trakt community)
+  6. "Popular"                         (Trakt all-time favorites)
 
 Only digitally-released content — no anticipated/unreleased titles.
 """
@@ -36,6 +37,7 @@ from app.catalog_generator import CatalogGenerator
 # Catalog slot ordering — controls row order in Stremio (lower = higher up)
 # ---------------------------------------------------------------------------
 SLOT_ORDER = {
+    "up-next": 0,
     "byw-1": 1,
     "byw-2": 2,
     "byw-3": 3,
@@ -251,7 +253,38 @@ async def sync_user_catalogs(
     )
 
     # ------------------------------------------------------------------
-    # Step 2: "Because You Watched [Title]" — tag-based similarity
+    # Step 2: "Up Next" — series actively watched in last 2 weeks
+    # ------------------------------------------------------------------
+    try:
+        recent_shows = await trakt_client.get_recent_show_history(
+            access_token, days=14, limit=100
+        )
+        # Deduplicate by show, preserving recency order
+        seen_show_ids: Set[int] = set()
+        up_next_ids: List[int] = []
+        for item in recent_shows:
+            show = item.get("show", {})
+            tmdb_id = show.get("ids", {}).get("tmdb")
+            if tmdb_id and tmdb_id not in seen_show_ids:
+                seen_show_ids.add(tmdb_id)
+                up_next_ids.append(tmdb_id)
+
+        if up_next_ids:
+            catalog_gen.save_user_catalog(
+                user_id=user.id,
+                slot_id="up-next",
+                name="Up Next",
+                media_type="tv",
+                tmdb_ids=up_next_ids,
+                generation_method="up_next",
+            )
+            catalogs_created += 1
+            logger.info(f"  Up Next: {len(up_next_ids)} shows")
+    except Exception as e:
+        logger.warning(f"  Up Next failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Step 3: "Because You Watched [Title]" — tag-based similarity
     # ------------------------------------------------------------------
     # Get RECENT history (ordered by recency) for BYW seeds
     recent_history = await trakt_client.get_user_history(access_token, limit=50)
@@ -289,7 +322,7 @@ async def sync_user_catalogs(
             logger.info(f"  BYW '{seed['title']}': {len(similar_ids)} items")
 
     # ------------------------------------------------------------------
-    # Step 3: "Recommended For You" — tag-based taste profile
+    # Step 4: "Recommended For You" — tag-based taste profile
     # ------------------------------------------------------------------
     for media_label, watched_ids, media_type, slot in [
         ("movies", watched_movie_ids, "movie", "rec-movie"),
@@ -317,7 +350,7 @@ async def sync_user_catalogs(
             logger.warning(f"  Tag recs ({media_label}) failed: {e}")
 
     # ------------------------------------------------------------------
-    # Step 4: "Trending Now" — what the Trakt community is watching
+    # Step 5: "Trending Now" — what the Trakt community is watching
     # ------------------------------------------------------------------
     for media_label, fetch_fn, media_type, slot in [
         ("movies", trakt_client.get_trending_movies, "movie", "trakt-trending-movie"),
@@ -343,7 +376,7 @@ async def sync_user_catalogs(
             logger.warning(f"  Trending ({media_label}) failed: {e}")
 
     # ------------------------------------------------------------------
-    # Step 5: "Top 10 Today" — most watched today (ranked, not shuffled)
+    # Step 6: "Top 10 Today" — most watched today (ranked, not shuffled)
     # ------------------------------------------------------------------
     for media_label, fetch_fn, media_type, slot in [
         ("movies", trakt_client.get_watched_daily_movies, "movie", "top10-movie"),
@@ -369,7 +402,7 @@ async def sync_user_catalogs(
             logger.warning(f"  Top 10 ({media_label}) failed: {e}")
 
     # ------------------------------------------------------------------
-    # Step 6: "Popular" — all-time popular on Trakt
+    # Step 7: "Popular" — all-time popular on Trakt
     # ------------------------------------------------------------------
     for media_label, fetch_fn, media_type, slot in [
         ("movies", trakt_client.get_popular_movies, "movie", "popular-movie"),
