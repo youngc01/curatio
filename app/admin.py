@@ -1251,6 +1251,80 @@ tr:last-child td{border-bottom:none}
 /* Toast */
 #toast{position:fixed;bottom:24px;right:24px;padding:12px 20px;background:#161b22;border:1px solid #30363d;border-radius:8px;color:#e6edf3;font-size:14px;transform:translateY(100px);opacity:0;transition:all .3s;z-index:1000}
 #toast.show{transform:translateY(0);opacity:1}
+
+/* ---- Mobile responsive ---- */
+@media(max-width:768px){
+  /* Topbar */
+  .topbar{padding:12px 16px;flex-wrap:wrap;gap:8px}
+  .topbar h1{font-size:16px}
+  .topbar-actions{gap:8px}
+  .topbar-actions button{padding:6px 12px;font-size:12px}
+
+  /* Tab navigation — horizontally scrollable */
+  .tab-nav{padding:0 8px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;-ms-overflow-style:none}
+  .tab-nav::-webkit-scrollbar{display:none}
+  .tab-btn{padding:10px 14px;font-size:13px;white-space:nowrap;flex-shrink:0}
+
+  /* Main content area */
+  .main{padding:16px}
+
+  /* Stats */
+  .stats-grid{grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:24px}
+  .stat-card{padding:16px}
+  .stat-value{font-size:24px}
+  .stat-label{font-size:11px}
+
+  /* Cards */
+  .card{padding:16px;margin-bottom:16px;border-radius:8px}
+  .card h3{font-size:15px;margin-bottom:12px}
+  .card-row{grid-template-columns:1fr;gap:16px}
+
+  /* Tables — horizontal scroll wrapper */
+  table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap}
+  thead{display:table;width:100%;table-layout:auto}
+  tbody{display:table;width:100%;table-layout:auto}
+  th{padding:8px 10px;font-size:11px}
+  td{padding:8px 10px;font-size:13px}
+
+  /* Forms */
+  .form-group input[type="text"],.form-group input[type="password"],.form-group input[type="number"],.form-group input[type="time"],.form-group select{font-size:16px;padding:12px 14px}
+
+  /* Buttons */
+  .btn{padding:12px 16px;font-size:13px;min-height:44px;-webkit-tap-highlight-color:transparent}
+  .btn:active{opacity:.85}
+  .btn-sm{padding:8px 12px;font-size:12px;min-height:40px}
+
+  /* Build info grid */
+  .build-info{grid-template-columns:1fr 1fr;gap:12px}
+  .build-stat .val{font-size:20px}
+
+  /* Log viewer */
+  .log-viewer{font-size:11px;max-height:300px;padding:10px}
+
+  /* Login */
+  .login-box{padding:32px 24px;margin:16px;max-width:none}
+
+  /* Toggle */
+  .toggle-label{font-size:13px}
+
+  /* Alerts */
+  .alert{font-size:13px;padding:10px 14px}
+
+  /* Toast */
+  #toast{bottom:16px;right:16px;left:16px;text-align:center;font-size:13px}
+}
+
+@media(max-width:400px){
+  .topbar{padding:10px 12px}
+  .topbar h1{font-size:14px}
+  .tab-btn{padding:8px 10px;font-size:12px}
+  .main{padding:12px}
+  .stats-grid{grid-template-columns:1fr 1fr;gap:8px}
+  .stat-card{padding:12px}
+  .stat-value{font-size:20px}
+  .card{padding:14px}
+  .build-info{grid-template-columns:1fr}
+}
 </style>
 </head>
 <body>
