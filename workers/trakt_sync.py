@@ -29,7 +29,6 @@ from app.models import User, UserCatalog, UserCatalogContent, MovieTag, MediaMet
 from app.trakt_client import trakt_client
 from app.catalog_generator import CatalogGenerator
 
-
 # ---------------------------------------------------------------------------
 # Catalog slot ordering — controls row order in Stremio (lower = higher up)
 # ---------------------------------------------------------------------------
@@ -179,12 +178,8 @@ async def sync_user_catalogs(
     # ------------------------------------------------------------------
     logger.info(f"Syncing catalogs for user {user.trakt_username}...")
 
-    history_movies = await trakt_client.get_user_watched_movies(
-        access_token, limit=200
-    )
-    history_shows = await trakt_client.get_user_watched_shows(
-        access_token, limit=200
-    )
+    history_movies = await trakt_client.get_user_watched_movies(access_token, limit=200)
+    history_shows = await trakt_client.get_user_watched_shows(access_token, limit=200)
 
     watched_movie_ids = set(trakt_client.extract_tmdb_ids(history_movies, "movie"))
     watched_show_ids = set(trakt_client.extract_tmdb_ids(history_shows, "show"))
@@ -199,14 +194,16 @@ async def sync_user_catalogs(
     # Step 2: "Because You Watched [Title]" — tag-based similarity
     # ------------------------------------------------------------------
     # Get RECENT history (ordered by recency) for BYW seeds
-    recent_history = await trakt_client.get_user_history(
-        access_token, limit=50
+    recent_history = await trakt_client.get_user_history(access_token, limit=50)
+
+    byw_seeds = _pick_byw_seeds(
+        db, recent_history, watched_movie_ids | watched_show_ids
     )
 
-    byw_seeds = _pick_byw_seeds(db, recent_history, watched_movie_ids | watched_show_ids)
-
     for i, seed in enumerate(byw_seeds):
-        exclude = watched_movie_ids if seed["media_type"] == "movie" else watched_show_ids
+        exclude = (
+            watched_movie_ids if seed["media_type"] == "movie" else watched_show_ids
+        )
         similar_ids = find_similar_by_tags(
             db,
             reference_tmdb_id=seed["tmdb_id"],
@@ -229,9 +226,7 @@ async def sync_user_catalogs(
                 },
             )
             catalogs_created += 1
-            logger.info(
-                f"  BYW '{seed['title']}': {len(similar_ids)} items"
-            )
+            logger.info(f"  BYW '{seed['title']}': {len(similar_ids)} items")
 
     # ------------------------------------------------------------------
     # Step 3: "Recommended For You" — Trakt's own algorithm
@@ -289,7 +284,12 @@ async def sync_user_catalogs(
     # Step 5: "Popular This Week" — most watched on Trakt this week
     # ------------------------------------------------------------------
     for media_label, fetch_fn, media_type, slot in [
-        ("movies", trakt_client.get_popular_weekly_movies, "movie", "trakt-popular-movie"),
+        (
+            "movies",
+            trakt_client.get_popular_weekly_movies,
+            "movie",
+            "trakt-popular-movie",
+        ),
         ("shows", trakt_client.get_popular_weekly_shows, "tv", "trakt-popular-series"),
     ]:
         try:
