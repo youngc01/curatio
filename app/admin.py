@@ -35,6 +35,28 @@ from app.models import (
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+
+def _run_build_sync(build_main, movies: int, shows: int):
+    """Run the async build worker in a dedicated event loop inside a thread.
+
+    This keeps synchronous DB calls off the main event loop so the web UI
+    stays responsive during long builds.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(build_main(movies, shows))
+    finally:
+        loop.close()
+
+
+def _run_daily_sync(run_daily_update):
+    """Run the async daily update in a dedicated event loop inside a thread."""
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(run_daily_update())
+    finally:
+        loop.close()
+
 # Active build task (in-memory, intentionally not persisted)
 _active_build_task: Optional[asyncio.Task] = None
 SESSION_DURATION = timedelta(hours=24)
@@ -55,18 +77,21 @@ def _start_log_capture():
 
     _build_logs.clear()
 
+    # Capture the main event loop so we can schedule WS broadcasts
+    # from the build thread (which has its own loop).
+    try:
+        _main_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _main_loop = None
+
     def _sink(message):
         line = str(message).rstrip()
         _build_logs.append(line)
         # Broadcast to WebSocket clients (fire-and-forget)
-        if _ws_clients:
-            import asyncio as _aio
-
-            try:
-                loop = _aio.get_running_loop()
-                loop.create_task(_broadcast_log(line))
-            except RuntimeError:
-                pass  # no running loop (e.g. during testing)
+        if _ws_clients and _main_loop and _main_loop.is_running():
+            _main_loop.call_soon_threadsafe(
+                _main_loop.create_task, _broadcast_log(line)
+            )
 
     _build_log_sink_id = logger.add(
         _sink,
@@ -434,7 +459,8 @@ async def start_build(request: Request, _=Depends(verify_admin)):
         try:
             from workers.initial_build import main as build_main
 
-            await build_main(movies, shows)
+            # Run in a thread so synchronous DB calls don't block the event loop
+            await asyncio.to_thread(_run_build_sync, build_main, movies, shows)
         except asyncio.CancelledError:
             logger.warning("Build task was cancelled by user")
             _mark_running_jobs_cancelled()
@@ -462,7 +488,7 @@ async def trigger_daily_update(request: Request, _=Depends(verify_admin)):
         try:
             from workers.daily_update import run_daily_update
 
-            await run_daily_update()
+            await asyncio.to_thread(_run_daily_sync, run_daily_update)
         except asyncio.CancelledError:
             logger.warning("Daily update was cancelled by user")
             _mark_running_jobs_cancelled()
@@ -627,7 +653,7 @@ def _relaunch_build(movies: int, shows: int, reason: str = "Auto-resumed"):
         try:
             from workers.initial_build import main as build_main
 
-            await build_main(movies, shows)
+            await asyncio.to_thread(_run_build_sync, build_main, movies, shows)
         except asyncio.CancelledError:
             logger.warning("Build task was cancelled by user")
             _mark_running_jobs_cancelled()
