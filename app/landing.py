@@ -8,8 +8,6 @@ from app.config import settings
 def landing_page_html() -> str:
     """Landing page with install options and Trakt connect."""
     base_url = settings.base_url
-    manifest_url = f"{base_url}/manifest.json"
-    stremio_install = f"stremio://{base_url.replace('https://', '').replace('http://', '')}/manifest.json"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -177,12 +175,15 @@ function verifyAndInstall() {{
 
   fetch('/auth/verify-invite?invite=' + encodeURIComponent(code)).then(function(resp) {{
     if (resp.ok) {{
-      // Code is valid — show install link and auto-open Stremio
-      var stremioUrl = 'stremio://{base_url.replace("https://", "").replace("http://", "")}/manifest.json';
-      var manifestUrl = '{manifest_url}';
-      document.getElementById('manifest-url').textContent = manifestUrl;
-      document.getElementById('manifest-url').style.display = 'block';
-      window.location.href = stremioUrl;
+      return resp.json().then(function(data) {{
+        var token = data.install_token;
+        var baseHost = '{base_url.replace("https://", "").replace("http://", "")}';
+        var stremioUrl = 'stremio://' + baseHost + '/' + token + '/manifest.json';
+        var manifestUrl = '{base_url}/' + token + '/manifest.json';
+        document.getElementById('manifest-url').textContent = manifestUrl;
+        document.getElementById('manifest-url').style.display = 'block';
+        window.location.href = stremioUrl;
+      }});
     }} else {{
       return resp.json().then(function(data) {{
         errEl.textContent = data.detail || 'Invalid or expired invite code.';
