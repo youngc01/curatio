@@ -25,7 +25,7 @@ from app.database import (
     init_database,
     check_database_connection,
 )
-from app.models import User, UniversalCategory, UserCatalog, OAuthState
+from app.models import User, UniversalCategory, UserCatalog, OAuthState, InviteCode, AdminSetting
 from app.catalog_generator import CatalogGenerator
 from app.trakt_client import trakt_client
 from app.crypto import encrypt_token, decrypt_token
@@ -40,6 +40,34 @@ _MANIFEST_TTL = 300  # 5 minutes
 def _invalidate_manifest_cache():
     """Call after admin changes categories to clear cached manifests."""
     _manifest_cache.clear()
+
+
+# ---- Install token (secret URL segment for universal manifest) ----
+_install_token_cache: str | None = None
+
+
+def get_install_token() -> str:
+    """Get or create the install token for the universal manifest URL.
+
+    Generated once and stored in admin_settings. This prevents anyone
+    from guessing the manifest URL just by knowing the domain.
+    """
+    global _install_token_cache
+    if _install_token_cache:
+        return _install_token_cache
+
+    with get_db() as db:
+        row = db.query(AdminSetting).filter(AdminSetting.key == "INSTALL_TOKEN").first()
+        if row:
+            _install_token_cache = row.value
+            return row.value
+
+        # First time: generate and persist
+        token = secrets.token_urlsafe(16)
+        db.add(AdminSetting(key="INSTALL_TOKEN", value=token))
+        db.commit()
+        _install_token_cache = token
+        return token
 
 
 async def ensure_valid_trakt_token(user: User, db: Session) -> str:
@@ -176,87 +204,79 @@ async def health_check():
 
 
 @app.get("/manifest.json")
-async def universal_manifest(db: Session = Depends(get_db_dependency)):
-    """
-    Stremio manifest for anonymous users (universal catalogs only).
-
-    This is installed when users don't sign in with Trakt.
-    Stremio derives the base URL by stripping the last path segment,
-    so /manifest.json -> base URL is / -> catalogs at /catalog/{type}/{id}.json
-    """
-    now = time()
-    cache_key = "universal"
-    if cache_key in _manifest_cache:
-        cached_at, cached_manifest = _manifest_cache[cache_key]
-        if now - cached_at < _MANIFEST_TTL:
-            response = JSONResponse(content=cached_manifest)
-            response.headers["Cache-Control"] = "public, max-age=3600"
-            return response
-
-    # Get active universal categories
-    categories = (
-        db.query(UniversalCategory)
-        .filter(UniversalCategory.is_active.is_(True))
-        .order_by(UniversalCategory.sort_order)
-        .all()
-    )
-
-    # Build catalogs for manifest
-    catalogs = []
-    for category in categories:
-        catalogs.append(
-            {
-                "id": category.id,
-                "name": category.name,
-                "type": _stremio_type(category.media_type),
-                "extra": [{"name": "skip", "isRequired": False}],
-            }
-        )
-
-    manifest = {
-        "id": "ai.recommendations.universal",
-        "version": "1.0.0",
-        "name": settings.addon_name,
-        "description": "AI-powered Netflix-style content discovery",
-        "resources": ["catalog"],
-        "types": ["movie", "series"],
-        "catalogs": catalogs,
-        "idPrefixes": ["tmdb"],
-        "behaviorHints": {"configurable": True, "configurationRequired": False},
-    }
-
-    _manifest_cache[cache_key] = (now, manifest)
-
-    response = JSONResponse(content=manifest)
-    response.headers["Cache-Control"] = "public, max-age=3600"
-    return response
-
-
-@app.get("/manifest/universal.json")
-async def universal_manifest_redirect():
-    """Redirect legacy manifest URL to the correct path."""
-    return RedirectResponse(url="/manifest.json", status_code=301)
+async def bare_manifest_blocked():
+    """Block bare /manifest.json — install token required."""
+    raise HTTPException(status_code=404, detail="Not found")
 
 
 @app.get("/{user_key}/manifest.json")
-async def personalized_manifest(
+async def manifest(
     user_key: str, db: Session = Depends(get_db_dependency)
 ):
     """
-    Stremio manifest for authenticated users (universal + personalized catalogs).
+    Stremio manifest endpoint.
+
+    Serves the universal manifest when user_key matches the install token,
+    or a personalized manifest when it matches a Trakt user's key.
 
     URL pattern: /{user_key}/manifest.json
     Stremio derives base URL as /{user_key}/ so catalogs resolve to
     /{user_key}/catalog/{type}/{id}.json
-
-    Args:
-        user_key: Unique user identifier
     """
-    # Find user
+    install_token = get_install_token()
+
+    if user_key == install_token:
+        # ---- Universal manifest (install-token access) ----
+        now = time()
+        cache_key = "universal"
+        if cache_key in _manifest_cache:
+            cached_at, cached_manifest = _manifest_cache[cache_key]
+            if now - cached_at < _MANIFEST_TTL:
+                response = JSONResponse(content=cached_manifest)
+                response.headers["Cache-Control"] = "public, max-age=3600"
+                return response
+
+        categories = (
+            db.query(UniversalCategory)
+            .filter(UniversalCategory.is_active.is_(True))
+            .order_by(UniversalCategory.sort_order)
+            .all()
+        )
+
+        catalogs = []
+        for category in categories:
+            catalogs.append(
+                {
+                    "id": category.id,
+                    "name": category.name,
+                    "type": _stremio_type(category.media_type),
+                    "extra": [{"name": "skip", "isRequired": False}],
+                }
+            )
+
+        manifest_data = {
+            "id": "ai.recommendations.universal",
+            "version": "1.0.0",
+            "name": settings.addon_name,
+            "description": "AI-powered Netflix-style content discovery",
+            "resources": ["catalog"],
+            "types": ["movie", "series"],
+            "catalogs": catalogs,
+            "idPrefixes": ["tmdb"],
+            "behaviorHints": {"configurable": True, "configurationRequired": False},
+        }
+
+        _manifest_cache[cache_key] = (now, manifest_data)
+
+        response = JSONResponse(content=manifest_data)
+        response.headers["Cache-Control"] = "public, max-age=3600"
+        return response
+
+    # ---- Personalized manifest (Trakt user) ----
     user = db.query(User).filter(User.user_key == user_key).first()
 
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="Not found")
 
     # Get universal categories
     universal_categories = (
@@ -273,10 +293,8 @@ async def personalized_manifest(
         .all()
     )
 
-    # Build catalogs
     catalogs = []
 
-    # Add universal catalogs
     for category in universal_categories:
         catalogs.append(
             {
@@ -287,7 +305,6 @@ async def personalized_manifest(
             }
         )
 
-    # Add personalized catalogs
     for catalog in user_catalogs:
         catalogs.append(
             {
@@ -298,7 +315,7 @@ async def personalized_manifest(
             }
         )
 
-    manifest = {
+    manifest_data = {
         "id": f"ai.recommendations.{user_key}",
         "version": "1.0.0",
         "name": f"{settings.addon_name} - {user.trakt_username or 'Personal'}",
@@ -310,15 +327,9 @@ async def personalized_manifest(
         "behaviorHints": {"configurable": True, "configurationRequired": False},
     }
 
-    response = JSONResponse(content=manifest)
+    response = JSONResponse(content=manifest_data)
     response.headers["Cache-Control"] = "public, max-age=3600"
     return response
-
-
-@app.get("/manifest/{user_key}.json")
-async def personalized_manifest_redirect(user_key: str):
-    """Redirect legacy personalized manifest URL to the correct path."""
-    return RedirectResponse(url=f"/{user_key}/manifest.json", status_code=301)
 
 
 def _build_stremio_metas(items: list, catalog_type: str) -> list:
@@ -412,26 +423,13 @@ def _serve_catalog(items: list, catalog_id: str, catalog_type: str, skip: int):
 
 
 @app.get("/catalog/{catalog_type}/{catalog_id}.json")
-async def universal_catalog(
-    catalog_type: str,
-    catalog_id: str,
-    skip: int = Query(0, ge=0),
-    db: Session = Depends(get_db_dependency),
-):
-    """
-    Universal catalog endpoint (for anonymous users).
-
-    Args:
-        catalog_type: 'movie' or 'series'
-        catalog_id: Category ID
-        skip: Pagination offset
-    """
-    items = _get_cached_catalog(catalog_id, db)
-    return _serve_catalog(items, catalog_id, catalog_type, skip)
+async def bare_catalog_blocked(catalog_type: str, catalog_id: str):
+    """Block bare /catalog/ — install token required."""
+    raise HTTPException(status_code=404, detail="Not found")
 
 
 @app.get("/{user_key}/catalog/{catalog_type}/{catalog_id}.json")
-async def personalized_catalog(
+async def catalog(
     user_key: str,
     catalog_type: str,
     catalog_id: str,
@@ -439,24 +437,24 @@ async def personalized_catalog(
     db: Session = Depends(get_db_dependency),
 ):
     """
-    Personalized catalog endpoint (for authenticated users).
+    Catalog endpoint for both universal (install-token) and personalized (user-key) access.
 
     URL pattern: /{user_key}/catalog/{type}/{id}.json
     Matches the base URL derived from /{user_key}/manifest.json
-
-    Args:
-        user_key: Unique user identifier
-        catalog_type: 'movie' or 'series'
-        catalog_id: Category ID
-        skip: Pagination offset
     """
-    # Find user
+    install_token = get_install_token()
+
+    if user_key == install_token:
+        # Universal catalog — catalog_id is the raw category ID
+        items = _get_cached_catalog(catalog_id, db)
+        return _serve_catalog(items, catalog_id, catalog_type, skip)
+
+    # Personalized catalog — find the user
     user = db.query(User).filter(User.user_key == user_key).first()
 
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="Not found")
 
-    # Check if universal or personal catalog
     if catalog_id.startswith("universal-"):
         actual_id = catalog_id.replace("universal-", "", 1)
         items = _get_cached_catalog(actual_id, db)
@@ -469,21 +467,62 @@ async def personalized_catalog(
     return _serve_catalog(items, catalog_id, catalog_type, skip)
 
 
+@app.get("/auth/verify-invite")
+async def verify_invite(
+    invite: str = Query(..., description="Invite code to verify"),
+):
+    """Verify an invite code is valid without consuming it.
+
+    Returns the install token so the client can build the manifest URL.
+    """
+    with get_db() as db_session:
+        inv = (
+            db_session.query(InviteCode)
+            .filter(InviteCode.code == invite, InviteCode.is_used.is_(False))
+            .first()
+        )
+        if inv:
+            if inv.expires_at and datetime.utcnow() > inv.expires_at:
+                raise HTTPException(status_code=403, detail="Invite code has expired")
+            return {"status": "valid", "install_token": get_install_token()}
+        elif invite == settings.master_password:
+            return {"status": "valid", "install_token": get_install_token()}
+        else:
+            raise HTTPException(status_code=403, detail="Invalid invite code")
+
+
 # OAuth endpoints for Trakt authentication
 @app.get("/auth/start")
 async def start_auth(
-    password: str = Query(..., description="Master password"),
+    invite: str = Query(None, description="One-time invite code"),
+    password: str = Query(None, description="Master password (legacy)"),
     db: Session = Depends(get_db_dependency),
 ):
     """
-    Start Trakt OAuth flow (requires master password).
+    Start Trakt OAuth flow.
 
-    Args:
-        password: Master password
+    Accepts either a one-time invite code (preferred) or the master password
+    (legacy fallback). Invite codes are consumed on successful Trakt callback.
     """
-    # Verify master password
-    if password != settings.master_password:
-        raise HTTPException(status_code=403, detail="Invalid master password")
+    code_value = invite or password
+    if not code_value:
+        raise HTTPException(status_code=403, detail="Invite code required")
+
+    # Check if it's a valid invite code first
+    invite_row = None
+    with get_db() as db_session:
+        invite_row = (
+            db_session.query(InviteCode)
+            .filter(InviteCode.code == code_value, InviteCode.is_used.is_(False))
+            .first()
+        )
+        if invite_row:
+            # Check expiry
+            if invite_row.expires_at and datetime.utcnow() > invite_row.expires_at:
+                raise HTTPException(status_code=403, detail="Invite code has expired")
+        elif code_value != settings.master_password:
+            # Not a valid invite code and not the master password
+            raise HTTPException(status_code=403, detail="Invalid invite code")
 
     # Generate state for CSRF protection and persist it
     state = secrets.token_urlsafe(32)
@@ -491,12 +530,20 @@ async def start_auth(
         # Clean up expired states (older than 10 minutes)
         cutoff = datetime.utcnow() - timedelta(minutes=10)
         db_session.query(OAuthState).filter(OAuthState.created_at < cutoff).delete()
+        # Store invite code in state so we can mark it used on callback
         db_session.add(OAuthState(state=state))
+
+    # Store the invite code in a temporary mapping so callback can mark it used
+    _pending_invite_codes[state] = code_value if invite_row else None
 
     # Get Trakt authorization URL
     auth_url = trakt_client.get_authorization_url(state)
 
     return RedirectResponse(url=auth_url)
+
+
+# Temporary mapping: OAuth state -> invite code (so callback can mark it used)
+_pending_invite_codes: dict[str, str | None] = {}
 
 
 @app.get("/api/auth/trakt/callback")
@@ -532,6 +579,9 @@ async def trakt_callback(
             status_code=400,
         )
 
+    # Retrieve pending invite code before consuming the state
+    pending_invite = _pending_invite_codes.pop(state, None)
+
     # Consume the state token (one-time use)
     db.query(OAuthState).filter(OAuthState.state == state).delete()
     db.commit()
@@ -547,6 +597,8 @@ async def trakt_callback(
         encrypted_access = encrypt_token(token_data["access_token"])
         encrypted_refresh = encrypt_token(token_data["refresh_token"])
         expires_at = datetime.utcnow() + timedelta(seconds=token_data["expires_in"])
+
+        trakt_username = profile.get("username", "")
 
         # Create or update user
         user = (
@@ -567,7 +619,7 @@ async def trakt_callback(
             user = User(
                 user_key=user_key,
                 trakt_user_id=str(profile["ids"]["slug"]),
-                trakt_username=profile.get("username"),
+                trakt_username=trakt_username,
                 trakt_access_token=encrypted_access,
                 trakt_refresh_token=encrypted_refresh,
                 trakt_token_expires_at=expires_at,
@@ -575,6 +627,20 @@ async def trakt_callback(
             db.add(user)
 
         db.commit()
+
+        # Mark invite code as used (if one was used)
+        if pending_invite:
+            with get_db() as inv_db:
+                inv = (
+                    inv_db.query(InviteCode)
+                    .filter(InviteCode.code == pending_invite)
+                    .first()
+                )
+                if inv:
+                    inv.is_used = True
+                    inv.used_at = datetime.utcnow()
+                    inv.used_by = trakt_username
+                    inv_db.commit()
 
         # Return success page
         manifest_url = f"{settings.base_url}/{user.user_key}/manifest.json"

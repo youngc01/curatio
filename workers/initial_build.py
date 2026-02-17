@@ -29,7 +29,11 @@ from app.catalog_generator import CatalogGenerator  # noqa: E402
 
 # Pause control — when cleared, the build blocks between batches.
 # Set by default (= not paused). Admin endpoints toggle this.
-pause_event = asyncio.Event()
+# Uses threading.Event so it works across the main event loop and the
+# build thread (build runs in asyncio.to_thread to avoid blocking the UI).
+import threading as _threading
+
+pause_event = _threading.Event()
 pause_event.set()
 
 
@@ -37,7 +41,9 @@ async def check_pause():
     """Block until the build is unpaused. No-op when not paused."""
     if not pause_event.is_set():
         logger.info("Build paused — waiting for resume...")
-        await pause_event.wait()
+        # Poll in async-friendly way so the thread stays responsive
+        while not pause_event.wait(timeout=1.0):
+            pass
         logger.info("Build resumed")
 
 
