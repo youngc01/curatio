@@ -94,8 +94,23 @@ async def run_scheduler() -> None:
 
             await asyncio.sleep(wait_seconds)
 
-            logger.info("Starting scheduled daily update...")
-            await run_daily_update()
+            # Retry with backoff for transient failures (e.g. DNS resolution)
+            max_attempts = 3
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    logger.info("Starting scheduled daily update...")
+                    await run_daily_update()
+                    break  # success
+                except Exception as e:
+                    if attempt < max_attempts:
+                        wait = 30 * attempt  # 30s, 60s
+                        logger.warning(
+                            f"Daily update attempt {attempt}/{max_attempts} "
+                            f"failed: {e} — retrying in {wait}s"
+                        )
+                        await asyncio.sleep(wait)
+                    else:
+                        raise  # let the outer handler deal with it
 
             # Sync personalized Trakt catalogs for all users
             if settings.enable_trakt_sync:
@@ -113,8 +128,8 @@ async def run_scheduler() -> None:
             logger.info("Scheduler cancelled, shutting down")
             break
         except Exception as e:
-            logger.error(f"Daily update failed: {e}")
-            # Wait 1 hour before retrying on failure
+            logger.error(f"Daily update failed after {max_attempts} attempts: {e}")
+            # Wait 1 hour before retrying on persistent failure
             logger.info("Retrying in 1 hour...")
             try:
                 await asyncio.sleep(3600)

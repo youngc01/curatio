@@ -422,7 +422,11 @@ def _shuffle_items(items: list, catalog_id: str) -> list:
 def _get_cached_catalog(
     catalog_id: str, db: Session, user_id: int | None = None
 ) -> list:
-    """Get catalog items with TTL + LRU caching."""
+    """Get catalog items with TTL + LRU caching.
+
+    Serves stale cached data when the database is temporarily unreachable
+    (e.g. transient DNS failures) instead of crashing.
+    """
     cache_key = f"{catalog_id}:user={user_id}"
     now = time()
     ttl = settings.cache_ttl
@@ -433,15 +437,24 @@ def _get_cached_catalog(
             # Touch: move to most-recent by re-inserting
             _catalog_cache[cache_key] = (now, items)
             return items
-        # Expired -- remove stale entry
-        del _catalog_cache[cache_key]
 
-    generator = CatalogGenerator(db)
-    items = generator.get_catalog_content(catalog_id, user_id=user_id)
-    _catalog_cache[cache_key] = (now, items)
-    _cache_evict()
-
-    return items
+    # Cache miss or expired — try refreshing from DB
+    try:
+        generator = CatalogGenerator(db)
+        items = generator.get_catalog_content(catalog_id, user_id=user_id)
+        _catalog_cache[cache_key] = (now, items)
+        _cache_evict()
+        return items
+    except Exception as e:
+        # DB unreachable — serve stale cache if available
+        if cache_key in _catalog_cache:
+            _, items = _catalog_cache[cache_key]
+            logger.warning(
+                f"DB error for catalog '{catalog_id}', serving stale cache: {e}"
+            )
+            return items
+        logger.error(f"DB error for catalog '{catalog_id}', no cached data: {e}")
+        return []
 
 
 def _serve_catalog(items: list, catalog_id: str, catalog_type: str, skip: int):

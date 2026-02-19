@@ -484,6 +484,8 @@ class CatalogGenerator:
         Returns:
             List of catalog items with metadata
         """
+        limit = settings.catalog_size
+
         if user_id:
             # Personalized catalog
             results = (
@@ -500,6 +502,7 @@ class CatalogGenerator:
                     UserCatalog.user_id == user_id, UserCatalog.slot_id == category_id
                 )
                 .order_by(UserCatalogContent.rank)
+                .limit(limit)
                 .all()
             )
         else:
@@ -515,6 +518,7 @@ class CatalogGenerator:
                 )
                 .filter(UniversalCatalogContent.category_id == category_id)
                 .order_by(UniversalCatalogContent.rank)
+                .limit(limit)
                 .all()
             )
 
