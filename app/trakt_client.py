@@ -29,7 +29,10 @@ class TraktClient:
         self.client_secret = client_secret or settings.trakt_client_secret
         self.redirect_uri = redirect_uri or settings.trakt_redirect_uri
 
-        self.client = httpx.AsyncClient(timeout=30.0)
+        self.client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0),
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+        )
 
     async def close(self):
         """Close HTTP client."""
@@ -55,6 +58,10 @@ class TraktClient:
         query = "&".join([f"{k}={v}" for k, v in params.items()])
         return f"{self.AUTH_URL}?{query}"
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=2, max=15),
+    )
     async def exchange_code_for_token(self, code: str) -> Dict:
         """
         Exchange authorization code for access token.
@@ -85,6 +92,10 @@ class TraktClient:
             logger.error(f"Failed to exchange code for token: {e}")
             raise
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=2, max=15),
+    )
     async def refresh_access_token(self, refresh_token: str) -> Dict:
         """
         Refresh expired access token.

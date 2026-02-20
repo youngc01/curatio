@@ -20,11 +20,48 @@ class TMDBServerError(Exception):
 
 
 def _is_retryable(exc: BaseException) -> bool:
-    """Only retry on transient errors, not TMDB 5xx server errors."""
-    return not isinstance(exc, TMDBServerError)
+    """Retry on transient/connection errors, not TMDB 5xx server errors."""
+    if isinstance(exc, TMDBServerError):
+        return False
+    # Always retry connection-level errors (VPN/Gluetun reconnects)
+    if isinstance(exc, (httpx.ConnectError, httpx.RemoteProtocolError, OSError)):
+        return True
+    return True  # default: retry
 
 
 MediaType = Literal["movie", "tv"]
+
+# Standard TMDB genre IDs — avoids an extra API call to /genre/movie/list
+# Combined movie + TV genres (TMDB uses the same IDs across both)
+_GENRE_MAP: dict[int, str] = {
+    28: "Action",
+    12: "Adventure",
+    16: "Animation",
+    35: "Comedy",
+    80: "Crime",
+    99: "Documentary",
+    18: "Drama",
+    10751: "Family",
+    14: "Fantasy",
+    36: "History",
+    27: "Horror",
+    10402: "Music",
+    9648: "Mystery",
+    10749: "Romance",
+    878: "Science Fiction",
+    10770: "TV Movie",
+    53: "Thriller",
+    10752: "War",
+    37: "Western",
+    10759: "Action & Adventure",
+    10762: "Kids",
+    10763: "News",
+    10764: "Reality",
+    10765: "Sci-Fi & Fantasy",
+    10766: "Soap",
+    10767: "Talk",
+    10768: "War & Politics",
+}
 
 
 class TMDBClient:
@@ -34,7 +71,10 @@ class TMDBClient:
 
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or settings.tmdb_api_key
-        self.client = httpx.AsyncClient(timeout=30.0)
+        self.client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0),
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+        )
 
     async def close(self):
         """Close HTTP client."""
@@ -80,15 +120,17 @@ class TMDBClient:
             raise
 
     async def get_movie(self, tmdb_id: int) -> Dict:
-        """Get detailed movie information."""
+        """Get detailed movie information (includes external_ids for IMDB)."""
         return await self._request(
-            f"/movie/{tmdb_id}", params={"append_to_response": "credits,keywords"}
+            f"/movie/{tmdb_id}",
+            params={"append_to_response": "credits,keywords,external_ids"},
         )
 
     async def get_tv_show(self, tmdb_id: int) -> Dict:
-        """Get detailed TV show information."""
+        """Get detailed TV show information (includes external_ids for IMDB)."""
         return await self._request(
-            f"/tv/{tmdb_id}", params={"append_to_response": "credits,keywords"}
+            f"/tv/{tmdb_id}",
+            params={"append_to_response": "credits,keywords,external_ids"},
         )
 
     async def get_popular_movies(self, page: int = 1) -> Dict:
@@ -526,7 +568,17 @@ class TMDBClient:
             "original_title": original_title,
             "overview": item.get("overview", ""),
             "release_date": release_date,
-            "genres": [g["name"] for g in item.get("genres", [])],
+            "genres": (
+                [g["name"] for g in item["genres"]]
+                if "genres" in item
+                and item["genres"]
+                and isinstance(item["genres"][0], dict)
+                else [
+                    _GENRE_MAP[gid]
+                    for gid in item.get("genre_ids", [])
+                    if gid in _GENRE_MAP
+                ]
+            ),
             "poster_path": item.get("poster_path"),
             "backdrop_path": item.get("backdrop_path"),
             "vote_average": item.get("vote_average"),

@@ -6,6 +6,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     gcc \
     postgresql-client \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
@@ -26,9 +27,9 @@ USER appuser
 ENV PORT=8000
 EXPOSE ${PORT}
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
-    CMD python -c "import os,requests; requests.get(f'http://localhost:{os.environ.get(\"PORT\",8000)}/health')"
+# Health check — use curl instead of spawning a Python process (~30MB RAM saved per check)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+    CMD curl -sf http://localhost:${PORT:-8000}/health || exit 1
 
 # Run FastAPI
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port $PORT"]

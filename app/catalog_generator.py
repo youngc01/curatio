@@ -524,12 +524,20 @@ class CatalogGenerator:
 
         items = []
         for content, metadata in results:
+            year = ""
+            if metadata.release_date:
+                year = metadata.release_date[:4]
+
             items.append(
                 {
                     "tmdb_id": metadata.tmdb_id,
                     "media_type": metadata.media_type,
                     "title": metadata.title,
                     "poster": metadata.poster_path,
+                    "year": year,
+                    "genres": metadata.genres or [],
+                    "rating": metadata.vote_average,
+                    "description": metadata.overview or "",
                     "rank": content.rank,
                 }
             )
