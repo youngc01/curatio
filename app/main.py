@@ -221,8 +221,12 @@ async def root():
 
 
 @app.get("/health")
-async def health_check():
-    """Health check endpoint."""
+def health_check():
+    """Health check endpoint.
+
+    Uses ``def`` so the synchronous DB ping runs in a threadpool and
+    does not block the event loop.
+    """
     db_ok = check_database_connection()
 
     return {
@@ -386,6 +390,10 @@ def _build_stremio_metas(items: list, catalog_type: str) -> list:
 _CACHE_MAX_ENTRIES = 256
 _catalog_cache: dict[str, tuple[float, list]] = {}
 
+# ---- User-key → User lookup cache (avoids DB hit on every request) ----
+_user_cache: dict[str, tuple[float, "User | None"]] = {}
+_USER_CACHE_TTL = 300  # 5 minutes
+
 
 def _cache_evict():
     """Evict oldest entries when cache exceeds max size."""
@@ -419,13 +427,26 @@ def _shuffle_items(items: list, catalog_id: str) -> list:
     return shuffled
 
 
+def _get_cached_user(user_key: str, db: Session) -> "User | None":
+    """Look up user by key with in-memory caching."""
+    now = time()
+    if user_key in _user_cache:
+        cached_at, user = _user_cache[user_key]
+        if now - cached_at < _USER_CACHE_TTL:
+            return user
+
+    user = db.query(User).filter(User.user_key == user_key).first()
+    _user_cache[user_key] = (now, user)
+    return user
+
+
 def _get_cached_catalog(
-    catalog_id: str, db: Session, user_id: int | None = None
+    catalog_id: str, db: Session | None = None, user_id: int | None = None
 ) -> list:
     """Get catalog items with TTL + LRU caching.
 
-    Serves stale cached data when the database is temporarily unreachable
-    (e.g. transient DNS failures) instead of crashing.
+    Only opens a DB session on cache miss. Serves stale cached data when
+    the database is temporarily unreachable (e.g. transient DNS failures).
     """
     cache_key = f"{catalog_id}:user={user_id}"
     now = time()
@@ -440,11 +461,23 @@ def _get_cached_catalog(
 
     # Cache miss or expired — try refreshing from DB
     try:
-        generator = CatalogGenerator(db)
-        items = generator.get_catalog_content(catalog_id, user_id=user_id)
-        _catalog_cache[cache_key] = (now, items)
-        _cache_evict()
-        return items
+        if db is None:
+            from app.database import get_db_session
+
+            db = get_db_session()
+            _close_db = True
+        else:
+            _close_db = False
+
+        try:
+            generator = CatalogGenerator(db)
+            items = generator.get_catalog_content(catalog_id, user_id=user_id)
+            _catalog_cache[cache_key] = (now, items)
+            _cache_evict()
+            return items
+        finally:
+            if _close_db:
+                db.close()
     except Exception as e:
         # DB unreachable — serve stale cache if available
         if cache_key in _catalog_cache:
@@ -496,7 +529,7 @@ async def bare_catalog_extra_blocked(catalog_type: str, catalog_id: str, extra: 
 
 
 @app.get("/{user_key}/catalog/{catalog_type}/{catalog_id}/{extra}.json")
-async def catalog_with_extra(
+def catalog_with_extra(
     user_key: str,
     catalog_type: str,
     catalog_id: str,
@@ -509,16 +542,19 @@ async def catalog_with_extra(
       /{key}/catalog/{type}/{id}/skip=100.json
     instead of as a query parameter:
       /{key}/catalog/{type}/{id}.json?skip=100
+
+    Uses ``def`` (not ``async def``) so synchronous DB queries run in a
+    threadpool and do not block the event loop under heavy load.
     """
     params = _parse_extras(extra)
     skip = int(params.get("skip", 0))
     if skip < 0:
         skip = 0
-    return await catalog(user_key, catalog_type, catalog_id, skip, db)
+    return catalog(user_key, catalog_type, catalog_id, skip, db)
 
 
 @app.get("/{user_key}/catalog/{catalog_type}/{catalog_id}.json")
-async def catalog(
+def catalog(
     user_key: str,
     catalog_type: str,
     catalog_id: str,
@@ -527,6 +563,9 @@ async def catalog(
 ):
     """
     Catalog endpoint for both universal (install-token) and personalized (user-key) access.
+
+    Uses ``def`` (not ``async def``) so synchronous DB queries run in a
+    threadpool and do not block the event loop under heavy load.
 
     URL pattern: /{user_key}/catalog/{type}/{id}.json
     Matches the base URL derived from /{user_key}/manifest.json
@@ -538,8 +577,8 @@ async def catalog(
         items = _get_cached_catalog(catalog_id, db)
         return _serve_catalog(items, catalog_id, catalog_type, skip)
 
-    # Personalized catalog — find the user
-    user = db.query(User).filter(User.user_key == user_key).first()
+    # Personalized catalog — find the user (cached to avoid DB hit on every request)
+    user = _get_cached_user(user_key, db)
 
     if not user:
         raise HTTPException(status_code=404, detail="Not found")
