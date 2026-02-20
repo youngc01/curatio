@@ -155,6 +155,13 @@ def _add_missing_columns():
     migrations = [
         ("users", "hide_foreign", "BOOLEAN NOT NULL DEFAULT FALSE"),
         ("users", "hide_adult", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        ("media_metadata", "original_language", "VARCHAR(10)"),
+        ("media_metadata", "adult", "BOOLEAN DEFAULT FALSE"),
+        ("media_metadata", "overview", "TEXT"),
+        ("media_metadata", "backdrop_path", "VARCHAR(200)"),
+        ("media_metadata", "number_of_seasons", "INTEGER"),
+        ("media_metadata", "number_of_episodes", "INTEGER"),
+        ("media_metadata", "raw_data", "JSON"),
     ]
     with get_db() as db:
         for table, column, col_type in migrations:
