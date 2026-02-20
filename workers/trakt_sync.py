@@ -242,7 +242,7 @@ async def _backfill_metadata(
             continue
 
         # Find which IDs already have metadata
-        existing = set()
+        existing: Set[int] = set()
         id_list = list(all_ids)
         batch_sz = 500
         for i in range(0, len(id_list), batch_sz):
