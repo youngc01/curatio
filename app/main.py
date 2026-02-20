@@ -854,10 +854,10 @@ async def trakt_callback(
         )
 
     except Exception as e:
-        logger.error(f"OAuth callback failed: {e}")
+        logger.error(f"OAuth callback failed: {type(e).__name__}: {e}")
         return HTMLResponse(
             content=auth_error_html(
-                "Could not complete Trakt authentication. Please try again."
+                f"Could not complete Trakt authentication: {type(e).__name__}: {e}"
             ),
             status_code=500,
         )
