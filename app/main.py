@@ -370,17 +370,34 @@ async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
 
 
 def _build_stremio_metas(items: list, catalog_type: str) -> list:
-    """Convert catalog items to Stremio meta format."""
+    """Convert catalog items to Stremio meta format with rich metadata.
+
+    Includes releaseInfo, genres, description, and rating so Stremio can
+    render richer catalog cards without extra cinemeta lookups.
+    """
     metas = []
     for item in items:
-        meta = {
+        meta: dict = {
             "id": f"tmdb:{item['tmdb_id']}",
             "type": catalog_type,
             "name": item["title"],
+            "posterShape": "poster",
         }
 
         if item.get("poster"):
             meta["poster"] = f"https://image.tmdb.org/t/p/w500{item['poster']}"
+
+        if item.get("year"):
+            meta["releaseInfo"] = item["year"]
+
+        if item.get("description"):
+            meta["description"] = item["description"]
+
+        if item.get("rating"):
+            meta["imdbRating"] = str(round(item["rating"], 1))
+
+        if item.get("genres"):
+            meta["genres"] = item["genres"]
 
         metas.append(meta)
     return metas
