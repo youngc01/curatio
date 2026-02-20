@@ -131,6 +131,9 @@ def init_database():
         # Create tables
         create_tables()
 
+        # Add any missing columns to existing tables (lightweight migration)
+        _add_missing_columns()
+
         # Seed universal categories so manifest is never empty
         from app.categories import seed_categories
 
@@ -145,3 +148,20 @@ def init_database():
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
         raise
+
+
+def _add_missing_columns():
+    """Add columns that exist in models but not yet in the database."""
+    migrations = [
+        ("users", "hide_foreign", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        ("users", "hide_adult", "BOOLEAN NOT NULL DEFAULT FALSE"),
+    ]
+    with get_db() as db:
+        for table, column, col_type in migrations:
+            try:
+                db.execute(text(f"SELECT {column} FROM {table} LIMIT 1"))
+            except Exception:
+                db.rollback()
+                logger.info(f"Adding missing column {table}.{column}")
+                db.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+                db.commit()
