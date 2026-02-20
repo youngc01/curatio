@@ -421,7 +421,6 @@ p{{color:#999;font-size:.95rem;margin-bottom:24px;line-height:1.5}}
 
 def configure_page_html(user) -> str:
     """Settings page where users can toggle content filters."""
-    base_url = settings.base_url
     user_key = user.user_key
     username = user.trakt_username or user.trakt_user_id or "User"
     hide_foreign_checked = "checked" if user.hide_foreign else ""

@@ -834,9 +834,7 @@ async def trakt_callback(
 
 
 @app.get("/{user_key}/configure", response_class=HTMLResponse)
-def configure_page(
-    user_key: str, db: Session = Depends(get_db_dependency)
-):
+def configure_page(user_key: str, db: Session = Depends(get_db_dependency)):
     """User settings page for content filters."""
     user = db.query(User).filter(User.user_key == user_key).first()
     if not user:
@@ -869,7 +867,11 @@ async def save_user_settings_api(
     # Also clear the user object cache so the next catalog request sees updated prefs
     _user_cache.pop(user_key, None)
 
-    return {"status": "ok", "hide_foreign": user.hide_foreign, "hide_adult": user.hide_adult}
+    return {
+        "status": "ok",
+        "hide_foreign": user.hide_foreign,
+        "hide_adult": user.hide_adult,
+    }
 
 
 if __name__ == "__main__":
