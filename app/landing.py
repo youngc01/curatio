@@ -412,5 +412,3 @@ p{{color:#999;font-size:.95rem;margin-bottom:24px;line-height:1.5}}
 
 </body>
 </html>"""
-
-
