@@ -7,7 +7,12 @@ Handles user authentication and fetching watch history.
 from typing import List, Dict, Optional
 import httpx
 from loguru import logger
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_not_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from app.config import settings
 
@@ -61,6 +66,8 @@ class TraktClient:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=2, min=2, max=15),
+        retry=retry_if_not_exception_type(httpx.HTTPStatusError),
+        reraise=True,
     )
     async def exchange_code_for_token(self, code: str) -> Dict:
         """
@@ -95,6 +102,8 @@ class TraktClient:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=2, min=2, max=15),
+        retry=retry_if_not_exception_type(httpx.HTTPStatusError),
+        reraise=True,
     )
     async def refresh_access_token(self, refresh_token: str) -> Dict:
         """
@@ -136,7 +145,9 @@ class TraktClient:
         }
 
     @retry(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10)
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        reraise=True,
     )
     async def _request(
         self,
