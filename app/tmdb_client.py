@@ -20,8 +20,13 @@ class TMDBServerError(Exception):
 
 
 def _is_retryable(exc: BaseException) -> bool:
-    """Only retry on transient errors, not TMDB 5xx server errors."""
-    return not isinstance(exc, TMDBServerError)
+    """Retry on transient/connection errors, not TMDB 5xx server errors."""
+    if isinstance(exc, TMDBServerError):
+        return False
+    # Always retry connection-level errors (VPN/Gluetun reconnects)
+    if isinstance(exc, (httpx.ConnectError, httpx.RemoteProtocolError, OSError)):
+        return True
+    return True  # default: retry
 
 
 MediaType = Literal["movie", "tv"]
@@ -47,7 +52,10 @@ class TMDBClient:
 
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or settings.tmdb_api_key
-        self.client = httpx.AsyncClient(timeout=30.0)
+        self.client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0),
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+        )
 
     async def close(self):
         """Close HTTP client."""

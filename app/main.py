@@ -211,6 +211,13 @@ async def shutdown_event():
             pass
         logger.info("Scheduler stopped")
 
+    # Close HTTP clients so connections don't leak
+    from app.tmdb_client import tmdb_client
+
+    await tmdb_client.close()
+    await trakt_client.close()
+    logger.info("HTTP clients closed")
+
 
 @app.get("/", response_class=HTMLResponse)
 async def root():

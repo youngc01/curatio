@@ -20,7 +20,10 @@ from app.config import settings
 
 
 def _is_retryable_error(exception: BaseException) -> bool:
-    """Check if an error is retryable (rate limit or server error)."""
+    """Check if an error is retryable (rate limit, server error, or connection reset)."""
+    # Connection-level errors from VPN/Gluetun reconnects
+    if isinstance(exception, (ConnectionError, OSError, TimeoutError)):
+        return True
     error_str = str(exception)
     return "429" in error_str or "Resource exhausted" in error_str or "503" in error_str
 

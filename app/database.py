@@ -20,6 +20,7 @@ engine = create_engine(
     pool_size=settings.db_pool_size,
     max_overflow=settings.db_max_overflow,
     pool_pre_ping=True,  # Verify connections before using
+    pool_recycle=1800,  # Recycle connections every 30 min (handles VPN/Gluetun reconnects)
     echo=settings.debug,  # Log SQL queries in debug mode
 )
 
