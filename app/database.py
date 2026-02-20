@@ -153,8 +153,6 @@ def init_database():
 def _add_missing_columns():
     """Add columns that exist in models but not yet in the database."""
     migrations = [
-        ("users", "hide_foreign", "BOOLEAN NOT NULL DEFAULT FALSE"),
-        ("users", "hide_adult", "BOOLEAN NOT NULL DEFAULT FALSE"),
         ("media_metadata", "original_language", "VARCHAR(10)"),
         ("media_metadata", "adult", "BOOLEAN DEFAULT FALSE"),
         ("media_metadata", "overview", "TEXT"),
