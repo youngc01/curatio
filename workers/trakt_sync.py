@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.models import User, MovieTag, MediaMetadata
 from app.trakt_client import trakt_client
-from app.tmdb_client import tmdb_client, MediaType
+from app.tmdb_client import tmdb_client
 from app.catalog_generator import CatalogGenerator
 
 # ---------------------------------------------------------------------------
