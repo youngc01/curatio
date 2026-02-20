@@ -29,8 +29,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.models import User, MovieTag
+from app.models import User, MovieTag, MediaMetadata
 from app.trakt_client import trakt_client
+from app.tmdb_client import tmdb_client
 from app.catalog_generator import CatalogGenerator
 
 # ---------------------------------------------------------------------------
@@ -217,6 +218,77 @@ def find_recommendations_by_taste(
     )
 
     return [r.tmdb_id for r in results]
+
+
+# ---------------------------------------------------------------------------
+# Metadata backfill — ensure TMDB metadata exists for catalog items
+# ---------------------------------------------------------------------------
+async def _backfill_metadata(
+    db: Session,
+    tmdb_ids_by_type: Dict[str, Set[int]],
+) -> int:
+    """Fetch and store MediaMetadata for TMDB IDs that are missing from the DB.
+
+    This is needed because Trakt returns TMDB IDs that may not have been
+    processed by initial_build or daily_update.  Without metadata the
+    INNER JOIN in get_catalog_content() silently drops those items.
+
+    Returns the number of items backfilled.
+    """
+    backfilled = 0
+
+    for media_type, all_ids in tmdb_ids_by_type.items():
+        if not all_ids:
+            continue
+
+        # Find which IDs already have metadata
+        existing: Set[int] = set()
+        id_list = list(all_ids)
+        batch_sz = 500
+        for i in range(0, len(id_list), batch_sz):
+            batch = id_list[i : i + batch_sz]
+            rows = (
+                db.query(MediaMetadata.tmdb_id)
+                .filter(
+                    MediaMetadata.media_type == media_type,
+                    MediaMetadata.tmdb_id.in_(batch),
+                )
+                .all()
+            )
+            existing.update(r.tmdb_id for r in rows)
+
+        missing = all_ids - existing
+        if not missing:
+            continue
+
+        logger.info(
+            f"Backfilling metadata for {len(missing)} {media_type} items "
+            f"({len(existing)} already cached)"
+        )
+
+        for tmdb_id in missing:
+            try:
+                if media_type == "movie":
+                    details = await tmdb_client.get_movie(tmdb_id)
+                else:
+                    details = await tmdb_client.get_tv_show(tmdb_id)
+
+                meta_dict = tmdb_client.extract_metadata(
+                    details, media_type  # type: ignore[arg-type]
+                )
+                db.merge(MediaMetadata(**meta_dict))
+                backfilled += 1
+            except Exception as e:
+                logger.debug(
+                    f"Could not fetch metadata for {media_type}/{tmdb_id}: {e}"
+                )
+
+        db.flush()
+
+    if backfilled:
+        logger.info(f"Backfilled metadata for {backfilled} items total")
+
+    return backfilled
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +498,31 @@ async def sync_user_catalogs(
                 logger.info(f"  Popular ({media_label}): {len(tmdb_ids)} items")
         except Exception as e:
             logger.warning(f"  Popular ({media_label}) failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Backfill metadata for any TMDB IDs not yet in MediaMetadata.
+    # Without this, get_catalog_content()'s INNER JOIN drops items.
+    # ------------------------------------------------------------------
+    from app.models import UserCatalog, UserCatalogContent
+
+    user_catalog_ids = [
+        c.id
+        for c in db.query(UserCatalog.id).filter(UserCatalog.user_id == user.id).all()
+    ]
+    if user_catalog_ids:
+        rows = (
+            db.query(UserCatalogContent.tmdb_id, UserCatalogContent.media_type)
+            .filter(UserCatalogContent.catalog_id.in_(user_catalog_ids))
+            .distinct()
+            .all()
+        )
+        ids_by_type: Dict[str, Set[int]] = {"movie": set(), "tv": set()}
+        for r in rows:
+            ids_by_type.setdefault(r.media_type, set()).add(r.tmdb_id)
+        try:
+            await _backfill_metadata(db, ids_by_type)
+        except Exception as e:
+            logger.warning(f"Metadata backfill had errors: {e}")
 
     # ------------------------------------------------------------------
     # Done — update sync timestamp
