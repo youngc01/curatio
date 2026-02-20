@@ -7,7 +7,7 @@ No Gemini calls needed - everything is pre-computed from tags!
 
 from typing import List, Dict, Optional
 from datetime import datetime
-from sqlalchemy import func, and_
+from sqlalchemy import func, and_, or_
 from sqlalchemy.orm import Session
 from loguru import logger
 
@@ -522,11 +522,22 @@ class CatalogGenerator:
                 .filter(UniversalCatalogContent.category_id == category_id)
             )
 
-        # Apply content filters
+        # Apply content filters (treat NULL metadata as "keep" so items
+        # that haven't been backfilled yet aren't silently dropped)
         if hide_foreign:
-            query = query.filter(MediaMetadata.original_language == "en")
+            query = query.filter(
+                or_(
+                    MediaMetadata.original_language == "en",
+                    MediaMetadata.original_language.is_(None),
+                )
+            )
         if hide_adult:
-            query = query.filter(MediaMetadata.adult.isnot(True))
+            query = query.filter(
+                or_(
+                    MediaMetadata.adult.isnot(True),
+                    MediaMetadata.adult.is_(None),
+                )
+            )
 
         if user_id:
             results = query.order_by(UserCatalogContent.rank).limit(limit).all()
