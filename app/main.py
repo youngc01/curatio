@@ -9,6 +9,8 @@ import hashlib
 import random
 from time import time
 
+import httpx
+
 from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -758,10 +760,38 @@ async def trakt_callback(
 
     try:
         # Exchange code for token
-        token_data = await trakt_client.exchange_code_for_token(code)
+        try:
+            token_data = await trakt_client.exchange_code_for_token(code)
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code
+            logger.error(f"Trakt token exchange failed ({status}): {e.response.text}")
+            if status == 401:
+                detail = "Trakt rejected the credentials. Check TRAKT_CLIENT_ID and TRAKT_CLIENT_SECRET."
+            elif status == 403:
+                detail = "Trakt denied access. The redirect URI may not match the Trakt app settings."
+            else:
+                detail = f"Trakt returned HTTP {status} during token exchange."
+            return HTMLResponse(content=auth_error_html(detail), status_code=502)
+        except Exception as e:
+            logger.error(f"Token exchange network error: {e}")
+            return HTMLResponse(
+                content=auth_error_html(
+                    "Could not reach Trakt servers. Please try again in a moment."
+                ),
+                status_code=502,
+            )
 
         # Get user profile
-        profile = await trakt_client.get_user_profile(token_data["access_token"])
+        try:
+            profile = await trakt_client.get_user_profile(token_data["access_token"])
+        except Exception as e:
+            logger.error(f"Failed to fetch Trakt profile: {e}")
+            return HTMLResponse(
+                content=auth_error_html(
+                    "Authenticated with Trakt but could not fetch your profile. Please try again."
+                ),
+                status_code=502,
+            )
 
         # Encrypt tokens before storage
         encrypted_access = encrypt_token(token_data["access_token"])
