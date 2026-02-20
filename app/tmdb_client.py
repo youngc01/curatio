@@ -34,14 +34,33 @@ MediaType = Literal["movie", "tv"]
 # Standard TMDB genre IDs — avoids an extra API call to /genre/movie/list
 # Combined movie + TV genres (TMDB uses the same IDs across both)
 _GENRE_MAP: dict[int, str] = {
-    28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy",
-    80: "Crime", 99: "Documentary", 18: "Drama", 10751: "Family",
-    14: "Fantasy", 36: "History", 27: "Horror", 10402: "Music",
-    9648: "Mystery", 10749: "Romance", 878: "Science Fiction",
-    10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western",
-    10759: "Action & Adventure", 10762: "Kids", 10763: "News",
-    10764: "Reality", 10765: "Sci-Fi & Fantasy", 10766: "Soap",
-    10767: "Talk", 10768: "War & Politics",
+    28: "Action",
+    12: "Adventure",
+    16: "Animation",
+    35: "Comedy",
+    80: "Crime",
+    99: "Documentary",
+    18: "Drama",
+    10751: "Family",
+    14: "Fantasy",
+    36: "History",
+    27: "Horror",
+    10402: "Music",
+    9648: "Mystery",
+    10749: "Romance",
+    878: "Science Fiction",
+    10770: "TV Movie",
+    53: "Thriller",
+    10752: "War",
+    37: "Western",
+    10759: "Action & Adventure",
+    10762: "Kids",
+    10763: "News",
+    10764: "Reality",
+    10765: "Sci-Fi & Fantasy",
+    10766: "Soap",
+    10767: "Talk",
+    10768: "War & Politics",
 }
 
 
@@ -551,8 +570,14 @@ class TMDBClient:
             "release_date": release_date,
             "genres": (
                 [g["name"] for g in item["genres"]]
-                if "genres" in item and item["genres"] and isinstance(item["genres"][0], dict)
-                else [_GENRE_MAP[gid] for gid in item.get("genre_ids", []) if gid in _GENRE_MAP]
+                if "genres" in item
+                and item["genres"]
+                and isinstance(item["genres"][0], dict)
+                else [
+                    _GENRE_MAP[gid]
+                    for gid in item.get("genre_ids", [])
+                    if gid in _GENRE_MAP
+                ]
             ),
             "poster_path": item.get("poster_path"),
             "backdrop_path": item.get("backdrop_path"),
