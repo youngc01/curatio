@@ -566,6 +566,8 @@ class TMDBClient:
             "media_type": media_type,
             "title": title,
             "original_title": original_title,
+            "original_language": item.get("original_language"),
+            "adult": item.get("adult", False),
             "overview": item.get("overview", ""),
             "release_date": release_date,
             "genres": (

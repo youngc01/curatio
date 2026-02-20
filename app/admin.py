@@ -349,6 +349,8 @@ async def get_settings(request: Request, _=Depends(verify_admin)):
             "ENABLE_PERSONALIZED_CATALOGS": val("ENABLE_PERSONALIZED_CATALOGS").lower()
             in ("true", "1"),
             "ENABLE_TRAKT_SYNC": val("ENABLE_TRAKT_SYNC").lower() in ("true", "1"),
+            "HIDE_FOREIGN": val("HIDE_FOREIGN").lower() in ("true", "1"),
+            "HIDE_ADULT": val("HIDE_ADULT").lower() in ("true", "1"),
         },
         "schedule": {
             "DAILY_UPDATE_ENABLED": val("DAILY_UPDATE_ENABLED").lower()
@@ -378,6 +380,8 @@ async def update_settings(request: Request, _=Depends(verify_admin)):
         "ENABLE_UNIVERSAL_CATALOGS",
         "ENABLE_PERSONALIZED_CATALOGS",
         "ENABLE_TRAKT_SYNC",
+        "HIDE_FOREIGN",
+        "HIDE_ADULT",
         "DAILY_UPDATE_ENABLED",
         "DAILY_UPDATE_TIME",
     }
