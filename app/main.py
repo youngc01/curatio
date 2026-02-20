@@ -11,7 +11,7 @@ from time import time
 
 import httpx
 
-from fastapi import FastAPI, Depends, HTTPException, Query, Request
+from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
@@ -623,9 +623,9 @@ def catalog(
     if not user:
         raise HTTPException(status_code=404, detail="Not found")
 
-    # Use per-user filter preferences
-    hf = user.hide_foreign
-    ha = user.hide_adult
+    # Use global filter settings (controlled via admin panel)
+    hf = settings.hide_foreign
+    ha = settings.hide_adult
 
     if catalog_id.startswith("universal-"):
         actual_id = catalog_id.replace("universal-", "", 1)
@@ -861,47 +861,6 @@ async def trakt_callback(
             ),
             status_code=500,
         )
-
-
-@app.get("/{user_key}/configure", response_class=HTMLResponse)
-def configure_page(user_key: str, db: Session = Depends(get_db_dependency)):
-    """User settings page for content filters."""
-    user = db.query(User).filter(User.user_key == user_key).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="Not found")
-
-    from app.landing import configure_page_html
-
-    return HTMLResponse(content=configure_page_html(user))
-
-
-@app.post("/api/user/{user_key}/settings")
-async def save_user_settings_api(
-    user_key: str, request: Request, db: Session = Depends(get_db_dependency)
-):
-    """API endpoint to save user content filter preferences."""
-    user = db.query(User).filter(User.user_key == user_key).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="Not found")
-
-    body = await request.json()
-
-    user.hide_foreign = bool(body.get("hide_foreign", False))
-    user.hide_adult = bool(body.get("hide_adult", False))
-    db.commit()
-
-    # Invalidate cached catalogs for this user
-    keys_to_remove = [k for k in _catalog_cache if f"user={user.id}" in k]
-    for k in keys_to_remove:
-        del _catalog_cache[k]
-    # Also clear the user object cache so the next catalog request sees updated prefs
-    _user_cache.pop(user_key, None)
-
-    return {
-        "status": "ok",
-        "hide_foreign": user.hide_foreign,
-        "hide_adult": user.hide_adult,
-    }
 
 
 if __name__ == "__main__":

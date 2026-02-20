@@ -1549,6 +1549,25 @@ tr:last-child td{border-bottom:none}
         </div>
       </div>
 
+      <div class="card">
+        <h3>Content Filters</h3>
+        <p style="color:#8b949e;font-size:13px;margin-bottom:20px">Global content filters applied to all catalogs for every user.</p>
+        <div style="display:flex;flex-direction:column;gap:20px">
+          <label class="toggle">
+            <input type="checkbox" id="set-HIDE_FOREIGN">
+            <span class="toggle-track"></span>
+            <span class="toggle-label">Hide Foreign Films</span>
+          </label>
+          <div class="hint" style="margin-top:-12px">Only show English-language content in all catalogs.</div>
+          <label class="toggle">
+            <input type="checkbox" id="set-HIDE_ADULT">
+            <span class="toggle-track"></span>
+            <span class="toggle-label">Hide Explicit Content (18+)</span>
+          </label>
+          <div class="hint" style="margin-top:-12px">Filter out adult-rated titles from all catalogs.</div>
+        </div>
+      </div>
+
       <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
     </div>
 
@@ -1822,6 +1841,10 @@ async function loadSettings() {
     document.getElementById('set-ENABLE_PERSONALIZED_CATALOGS').checked = s.features.ENABLE_PERSONALIZED_CATALOGS;
     document.getElementById('set-ENABLE_TRAKT_SYNC').checked = s.features.ENABLE_TRAKT_SYNC;
 
+    // Content Filters
+    document.getElementById('set-HIDE_FOREIGN').checked = s.features.HIDE_FOREIGN;
+    document.getElementById('set-HIDE_ADULT').checked = s.features.HIDE_ADULT;
+
     // Schedule
     document.getElementById('schedule-enabled').checked = s.schedule.DAILY_UPDATE_ENABLED;
     document.getElementById('schedule-time').value = s.schedule.DAILY_UPDATE_TIME || '03:00';
@@ -1850,6 +1873,8 @@ async function saveSettings() {
   data.ENABLE_UNIVERSAL_CATALOGS = document.getElementById('set-ENABLE_UNIVERSAL_CATALOGS').checked;
   data.ENABLE_PERSONALIZED_CATALOGS = document.getElementById('set-ENABLE_PERSONALIZED_CATALOGS').checked;
   data.ENABLE_TRAKT_SYNC = document.getElementById('set-ENABLE_TRAKT_SYNC').checked;
+  data.HIDE_FOREIGN = document.getElementById('set-HIDE_FOREIGN').checked;
+  data.HIDE_ADULT = document.getElementById('set-HIDE_ADULT').checked;
 
   try {
     const res = await api('POST', '/admin/api/settings', data);

@@ -178,10 +178,6 @@ class User(Base):
 
     is_active = Column(Boolean, default=True, nullable=False)
 
-    # Content filter preferences
-    hide_foreign = Column(Boolean, default=False, nullable=False)
-    hide_adult = Column(Boolean, default=False, nullable=False)
-
     # Relationships
     personal_catalogs = relationship(
         "UserCatalog", back_populates="user", cascade="all, delete-orphan"
