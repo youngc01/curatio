@@ -9,7 +9,7 @@ import hashlib
 import random
 from time import time
 
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
@@ -465,14 +465,18 @@ def _get_cached_user(user_key: str, db: Session) -> "User | None":
 
 
 def _get_cached_catalog(
-    catalog_id: str, db: Session | None = None, user_id: int | None = None
+    catalog_id: str,
+    db: Session | None = None,
+    user_id: int | None = None,
+    hide_foreign: bool = False,
+    hide_adult: bool = False,
 ) -> list:
     """Get catalog items with TTL + LRU caching.
 
     Only opens a DB session on cache miss. Serves stale cached data when
     the database is temporarily unreachable (e.g. transient DNS failures).
     """
-    cache_key = f"{catalog_id}:user={user_id}"
+    cache_key = f"{catalog_id}:user={user_id}:f={hide_foreign}:a={hide_adult}"
     now = time()
     ttl = settings.cache_ttl
 
@@ -495,7 +499,12 @@ def _get_cached_catalog(
 
         try:
             generator = CatalogGenerator(db)
-            items = generator.get_catalog_content(catalog_id, user_id=user_id)
+            items = generator.get_catalog_content(
+                catalog_id,
+                user_id=user_id,
+                hide_foreign=hide_foreign,
+                hide_adult=hide_adult,
+            )
             _catalog_cache[cache_key] = (now, items)
             _cache_evict()
             return items
@@ -597,8 +606,13 @@ def catalog(
     install_token = get_install_token()
 
     if user_key == install_token:
-        # Universal catalog — catalog_id is the raw category ID
-        items = _get_cached_catalog(catalog_id, db)
+        # Universal catalog — use global filter defaults
+        items = _get_cached_catalog(
+            catalog_id,
+            db,
+            hide_foreign=settings.hide_foreign,
+            hide_adult=settings.hide_adult,
+        )
         return _serve_catalog(items, catalog_id, catalog_type, skip)
 
     # Personalized catalog — find the user (cached to avoid DB hit on every request)
@@ -607,12 +621,16 @@ def catalog(
     if not user:
         raise HTTPException(status_code=404, detail="Not found")
 
+    # Use per-user filter preferences
+    hf = user.hide_foreign
+    ha = user.hide_adult
+
     if catalog_id.startswith("universal-"):
         actual_id = catalog_id.replace("universal-", "", 1)
-        items = _get_cached_catalog(actual_id, db)
+        items = _get_cached_catalog(actual_id, db, hide_foreign=hf, hide_adult=ha)
     elif catalog_id.startswith("personal-"):
         actual_id = catalog_id.replace("personal-", "", 1)
-        items = _get_cached_catalog(actual_id, db, user_id=user.id)  # type: ignore[arg-type]
+        items = _get_cached_catalog(actual_id, db, user_id=user.id, hide_foreign=hf, hide_adult=ha)  # type: ignore[arg-type]
     else:
         raise HTTPException(status_code=404, detail="Catalog not found")
 
@@ -813,6 +831,47 @@ async def trakt_callback(
             ),
             status_code=500,
         )
+
+
+@app.get("/{user_key}/configure", response_class=HTMLResponse)
+def configure_page(user_key: str, db: Session = Depends(get_db_dependency)):
+    """User settings page for content filters."""
+    user = db.query(User).filter(User.user_key == user_key).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    from app.landing import configure_page_html
+
+    return HTMLResponse(content=configure_page_html(user))
+
+
+@app.post("/api/user/{user_key}/settings")
+async def save_user_settings_api(
+    user_key: str, request: Request, db: Session = Depends(get_db_dependency)
+):
+    """API endpoint to save user content filter preferences."""
+    user = db.query(User).filter(User.user_key == user_key).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    body = await request.json()
+
+    user.hide_foreign = bool(body.get("hide_foreign", False))
+    user.hide_adult = bool(body.get("hide_adult", False))
+    db.commit()
+
+    # Invalidate cached catalogs for this user
+    keys_to_remove = [k for k in _catalog_cache if f"user={user.id}" in k]
+    for k in keys_to_remove:
+        del _catalog_cache[k]
+    # Also clear the user object cache so the next catalog request sees updated prefs
+    _user_cache.pop(user_key, None)
+
+    return {
+        "status": "ok",
+        "hide_foreign": user.hide_foreign,
+        "hide_adult": user.hide_adult,
+    }
 
 
 if __name__ == "__main__":

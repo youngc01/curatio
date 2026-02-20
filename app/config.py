@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     )
     enable_trakt_sync: bool = Field(True, description="Enable Trakt sync")
 
+    # Content Filters (global defaults — users can override per-account)
+    hide_foreign: bool = Field(False, description="Hide non-English content by default")
+    hide_adult: bool = Field(False, description="Hide explicit/18+ content by default")
+
     # Performance
     workers: int = Field(4, description="Number of Uvicorn workers")
     cache_ttl: int = Field(3600, description="Cache TTL in seconds")

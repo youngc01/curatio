@@ -472,7 +472,11 @@ class CatalogGenerator:
         return catalog
 
     def get_catalog_content(
-        self, category_id: str, user_id: Optional[int] = None
+        self,
+        category_id: str,
+        user_id: Optional[int] = None,
+        hide_foreign: bool = False,
+        hide_adult: bool = False,
     ) -> List[Dict]:
         """
         Get catalog content with metadata.
@@ -480,6 +484,8 @@ class CatalogGenerator:
         Args:
             category_id: Category ID
             user_id: User ID (for personalized catalogs)
+            hide_foreign: Exclude non-English content
+            hide_adult: Exclude explicit/18+ content
 
         Returns:
             List of catalog items with metadata
@@ -488,7 +494,7 @@ class CatalogGenerator:
 
         if user_id:
             # Personalized catalog
-            results = (
+            query = (
                 self.db.query(UserCatalogContent, MediaMetadata)
                 .join(
                     MediaMetadata,
@@ -501,14 +507,11 @@ class CatalogGenerator:
                 .filter(
                     UserCatalog.user_id == user_id, UserCatalog.slot_id == category_id
                 )
-                .order_by(UserCatalogContent.rank)
-                .limit(limit)
-                .all()
             )
         else:
             # Universal catalog
-            results = (
-                self.db.query(UniversalCatalogContent, MediaMetadata)  # type: ignore[assignment]
+            query = (
+                self.db.query(UniversalCatalogContent, MediaMetadata)
                 .join(
                     MediaMetadata,
                     and_(
@@ -517,10 +520,18 @@ class CatalogGenerator:
                     ),
                 )
                 .filter(UniversalCatalogContent.category_id == category_id)
-                .order_by(UniversalCatalogContent.rank)
-                .limit(limit)
-                .all()
             )
+
+        # Apply content filters
+        if hide_foreign:
+            query = query.filter(MediaMetadata.original_language == "en")
+        if hide_adult:
+            query = query.filter(MediaMetadata.adult.isnot(True))
+
+        if user_id:
+            results = query.order_by(UserCatalogContent.rank).limit(limit).all()
+        else:
+            results = query.order_by(UniversalCatalogContent.rank).limit(limit).all()
 
         items = []
         for content, metadata in results:

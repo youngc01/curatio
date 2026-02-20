@@ -178,6 +178,10 @@ class User(Base):
 
     is_active = Column(Boolean, default=True, nullable=False)
 
+    # Content filter preferences
+    hide_foreign = Column(Boolean, default=False, nullable=False)
+    hide_adult = Column(Boolean, default=False, nullable=False)
+
     # Relationships
     personal_catalogs = relationship(
         "UserCatalog", back_populates="user", cascade="all, delete-orphan"
@@ -278,6 +282,9 @@ class MediaMetadata(Base):
     poster_path = Column(String(200), nullable=True)
     backdrop_path = Column(String(200), nullable=True)
 
+    original_language = Column(String(10), nullable=True)
+    adult = Column(Boolean, default=False, nullable=True)
+
     vote_average = Column(Float, nullable=True)
     vote_count = Column(Integer, nullable=True)
     popularity = Column(Float, nullable=True)
@@ -295,6 +302,7 @@ class MediaMetadata(Base):
         Index("idx_media_type_popularity", "media_type", "popularity"),
         Index("idx_release_date", "release_date"),
         Index("idx_ratings", "media_type", "vote_average", "vote_count"),
+        Index("idx_original_language", "original_language"),
     )
 
     def __repr__(self):
