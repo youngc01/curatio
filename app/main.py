@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import random
 from time import time
+from urllib.parse import quote_plus
 
 import httpx
 
@@ -299,7 +300,7 @@ async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
             "version": "1.0.0",
             "name": settings.addon_name,
             "description": "AI-powered Netflix-style content discovery",
-            "resources": ["catalog"],
+            "resources": ["catalog", "meta"],
             "types": ["movie", "series"],
             "catalogs": catalogs,
             "idPrefixes": ["tmdb"],
@@ -366,7 +367,7 @@ async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
         "version": "1.0.0",
         "name": f"{settings.addon_name} - {user.trakt_username or 'Personal'}",
         "description": "AI-powered Netflix-style content discovery personalized for you",
-        "resources": ["catalog"],
+        "resources": ["catalog", "meta"],
         "types": ["movie", "series"],
         "catalogs": catalogs,
         "idPrefixes": ["tmdb"],
@@ -413,6 +414,124 @@ def _build_stremio_metas(items: list, catalog_type: str) -> list:
 
         metas.append(meta)
     return metas
+
+
+def _build_rich_meta(detail: dict, tmdb_type: str, stremio_type: str) -> dict:
+    """Build a rich Stremio meta object from a TMDB detail response.
+
+    Includes cast, director, writer, runtime, logo, and links with profile photos.
+    """
+    tmdb_id = detail["id"]
+    if tmdb_type == "movie":
+        title = detail.get("title", "Unknown")
+        release_date = detail.get("release_date", "")
+    else:
+        title = detail.get("name", "Unknown")
+        release_date = detail.get("first_air_date", "")
+
+    meta: dict = {
+        "id": f"tmdb:{tmdb_id}",
+        "type": stremio_type,
+        "name": title,
+        "posterShape": "poster",
+    }
+
+    if detail.get("overview"):
+        meta["description"] = detail["overview"]
+
+    if release_date and len(release_date) >= 4:
+        meta["releaseInfo"] = release_date[:4]
+
+    if detail.get("vote_average"):
+        meta["imdbRating"] = str(round(detail["vote_average"], 1))
+
+    if detail.get("genres"):
+        meta["genres"] = [g["name"] for g in detail["genres"] if g.get("name")]
+
+    # Images
+    if detail.get("poster_path"):
+        meta["poster"] = f"https://image.tmdb.org/t/p/w500{detail['poster_path']}"
+    if detail.get("backdrop_path"):
+        meta["background"] = f"https://image.tmdb.org/t/p/w1280{detail['backdrop_path']}"
+
+    logos = detail.get("images", {}).get("logos", [])
+    if logos:
+        logo_path = logos[0].get("file_path")
+        if logo_path:
+            meta["logo"] = f"https://image.tmdb.org/t/p/w500{logo_path}"
+
+    # Cast, director, writer from credits
+    credits = detail.get("credits", {})
+    cast_list = credits.get("cast", [])[:20]
+    crew_list = credits.get("crew", [])
+
+    if cast_list:
+        meta["cast"] = [p["name"] for p in cast_list if p.get("name")]
+
+    directors = [p["name"] for p in crew_list if p.get("job") == "Director"]
+    if not directors and tmdb_type == "tv":
+        directors = [p["name"] for p in detail.get("created_by", []) if p.get("name")]
+    if directors:
+        meta["director"] = directors
+
+    writers = list(
+        dict.fromkeys(  # dedupe preserving order
+            p["name"] for p in crew_list
+            if p.get("department") == "Writing" and p.get("name")
+        )
+    )[:5]
+    if writers:
+        meta["writer"] = writers
+
+    # Runtime
+    if tmdb_type == "movie" and detail.get("runtime"):
+        mins = detail["runtime"]
+        meta["runtime"] = f"{mins // 60}h {mins % 60}min" if mins >= 60 else f"{mins}min"
+    elif tmdb_type == "tv":
+        run_times = detail.get("episode_run_time", [])
+        if run_times:
+            mins = run_times[0]
+            meta["runtime"] = f"{mins}min"
+
+    # Links (cast + directors with profile photos and search URLs)
+    links = []
+    for person in cast_list:
+        name = person.get("name")
+        if not name:
+            continue
+        link: dict = {
+            "name": name,
+            "category": "Cast",
+            "url": f"stremio:///search?search={quote_plus(name)}",
+        }
+        if person.get("profile_path"):
+            link["poster"] = f"https://image.tmdb.org/t/p/w185{person['profile_path']}"
+        links.append(link)
+
+    for name in directors:
+        links.append({
+            "name": name,
+            "category": "Directors",
+            "url": f"stremio:///search?search={quote_plus(name)}",
+        })
+
+    if links:
+        meta["links"] = links
+
+    return meta
+
+
+# ---- Meta cache (avoids repeated TMDB calls for popular items) ----
+_meta_cache: dict[str, tuple[float, dict]] = {}
+_META_CACHE_TTL = 3600  # 1 hour
+_META_CACHE_MAX = 512
+
+
+def _meta_cache_evict():
+    """Evict oldest entries when meta cache exceeds max size."""
+    while len(_meta_cache) > _META_CACHE_MAX:
+        oldest_key = min(_meta_cache, key=lambda k: _meta_cache[k][0])
+        del _meta_cache[oldest_key]
 
 
 # ---- LRU catalog cache with TTL ----
@@ -640,6 +759,146 @@ def catalog(
         raise HTTPException(status_code=404, detail="Catalog not found")
 
     return _serve_catalog(items, catalog_id, catalog_type, skip)
+
+
+# ---------------------------------------------------------------------------
+# Meta endpoint — returns rich detail for a single item (cast, images, etc.)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/meta/{meta_type}/{meta_id}.json")
+async def bare_meta_blocked(meta_type: str, meta_id: str):
+    """Block bare /meta/ — install token required."""
+    raise HTTPException(status_code=404, detail="Not found")
+
+
+@app.get("/{user_key}/meta/{meta_type}/{meta_id}.json")
+async def meta_handler(user_key: str, meta_type: str, meta_id: str):
+    """Stremio meta endpoint — returns detailed info with cast, director, images.
+
+    Fetches from TMDB on-demand and caches in memory for 1 hour.
+    Uses ``async def`` because the TMDB client is async.
+    """
+    if not meta_id.startswith("tmdb:"):
+        raise HTTPException(status_code=404, detail="Invalid item ID")
+
+    try:
+        tmdb_id = int(meta_id.split(":", 1)[1])
+    except (ValueError, IndexError):
+        raise HTTPException(status_code=404, detail="Invalid item ID")
+
+    tmdb_type = "tv" if meta_type == "series" else meta_type
+
+    # Check in-memory cache
+    cache_key = f"meta:{tmdb_type}:{tmdb_id}"
+    now = time()
+    if cache_key in _meta_cache:
+        cached_at, cached_meta = _meta_cache[cache_key]
+        if now - cached_at < _META_CACHE_TTL:
+            response = JSONResponse(content={"meta": cached_meta})
+            response.headers["Cache-Control"] = "public, max-age=86400"
+            return response
+
+    from app.tmdb_client import tmdb_client
+
+    try:
+        if tmdb_type == "movie":
+            detail = await tmdb_client.get_movie(tmdb_id)
+        else:
+            detail = await tmdb_client.get_tv_show(tmdb_id)
+
+        meta = _build_rich_meta(detail, tmdb_type, meta_type)
+
+        _meta_cache[cache_key] = (now, meta)
+        _meta_cache_evict()
+
+        response = JSONResponse(content={"meta": meta})
+        response.headers["Cache-Control"] = "public, max-age=86400"
+        return response
+
+    except Exception as e:
+        logger.warning(f"TMDB detail fetch failed for {tmdb_type}/{tmdb_id}: {e}")
+        # Return minimal meta so Stremio doesn't show an error
+        response = JSONResponse(content={"meta": {
+            "id": meta_id,
+            "type": meta_type,
+            "name": "",
+        }})
+        return response
+
+
+# ---------------------------------------------------------------------------
+# Similar catalog — returns items similar to the given item
+# ---------------------------------------------------------------------------
+
+
+@app.get("/catalog/{catalog_type}/tmdb-similar/{meta_id}.json")
+async def bare_similar_blocked(catalog_type: str, meta_id: str):
+    """Block bare /catalog/similar — install token required."""
+    raise HTTPException(status_code=404, detail="Not found")
+
+
+@app.get("/{user_key}/catalog/{catalog_type}/tmdb-similar/{meta_id}.json")
+async def similar_catalog(user_key: str, catalog_type: str, meta_id: str):
+    """Catalog of items similar to the given item.
+
+    Fetches from TMDB's similar endpoint on-demand.
+    Uses ``async def`` because the TMDB client is async.
+    """
+    if not meta_id.startswith("tmdb:"):
+        raise HTTPException(status_code=404, detail="Invalid item ID")
+
+    try:
+        tmdb_id = int(meta_id.split(":", 1)[1])
+    except (ValueError, IndexError):
+        raise HTTPException(status_code=404, detail="Invalid item ID")
+
+    tmdb_type = "tv" if catalog_type == "series" else catalog_type
+
+    # Check in-memory cache
+    cache_key = f"similar:{tmdb_type}:{tmdb_id}"
+    now = time()
+    if cache_key in _meta_cache:
+        cached_at, cached_metas = _meta_cache[cache_key]
+        if now - cached_at < _META_CACHE_TTL:
+            response = JSONResponse(content={"metas": cached_metas})
+            response.headers["Cache-Control"] = "public, max-age=86400"
+            return response
+
+    from app.tmdb_client import tmdb_client
+
+    try:
+        if tmdb_type == "movie":
+            data = await tmdb_client.get_similar_movies(tmdb_id)
+        else:
+            data = await tmdb_client.get_similar_tv_shows(tmdb_id)
+
+        items = []
+        for r in data.get("results", [])[:20]:
+            item = {
+                "tmdb_id": r["id"],
+                "title": r.get("title") or r.get("name", "Unknown"),
+                "poster": r.get("poster_path"),
+                "backdrop": r.get("backdrop_path"),
+                "year": (r.get("release_date") or r.get("first_air_date") or "")[:4],
+                "description": r.get("overview", ""),
+                "rating": r.get("vote_average"),
+                "genres": None,  # discover results only have genre_ids
+            }
+            items.append(item)
+
+        metas = _build_stremio_metas(items, catalog_type)
+
+        _meta_cache[cache_key] = (now, metas)
+        _meta_cache_evict()
+
+        response = JSONResponse(content={"metas": metas})
+        response.headers["Cache-Control"] = "public, max-age=86400"
+        return response
+
+    except Exception as e:
+        logger.warning(f"TMDB similar fetch failed for {tmdb_type}/{tmdb_id}: {e}")
+        return JSONResponse(content={"metas": []})
 
 
 @app.get("/auth/verify-invite")
