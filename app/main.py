@@ -529,7 +529,7 @@ def _build_rich_meta(detail: dict, tmdb_type: str, stremio_type: str) -> dict:
 
 
 # ---- Meta cache (avoids repeated TMDB calls for popular items) ----
-_meta_cache: dict[str, tuple[float, dict]] = {}
+_meta_cache: dict[str, tuple[float, dict | list]] = {}
 _META_CACHE_TTL = 3600  # 1 hour
 _META_CACHE_MAX = 512
 
