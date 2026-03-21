@@ -141,15 +141,11 @@ class TMDBClient:
 
     async def get_similar_movies(self, tmdb_id: int, page: int = 1) -> Dict:
         """Get movies similar to the given movie."""
-        return await self._request(
-            f"/movie/{tmdb_id}/similar", params={"page": page}
-        )
+        return await self._request(f"/movie/{tmdb_id}/similar", params={"page": page})
 
     async def get_similar_tv_shows(self, tmdb_id: int, page: int = 1) -> Dict:
         """Get TV shows similar to the given show."""
-        return await self._request(
-            f"/tv/{tmdb_id}/similar", params={"page": page}
-        )
+        return await self._request(f"/tv/{tmdb_id}/similar", params={"page": page})
 
     async def get_popular_movies(self, page: int = 1) -> Dict:
         """Get popular movies."""

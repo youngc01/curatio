@@ -452,7 +452,9 @@ def _build_rich_meta(detail: dict, tmdb_type: str, stremio_type: str) -> dict:
     if detail.get("poster_path"):
         meta["poster"] = f"https://image.tmdb.org/t/p/w500{detail['poster_path']}"
     if detail.get("backdrop_path"):
-        meta["background"] = f"https://image.tmdb.org/t/p/w1280{detail['backdrop_path']}"
+        meta["background"] = (
+            f"https://image.tmdb.org/t/p/w1280{detail['backdrop_path']}"
+        )
 
     logos = detail.get("images", {}).get("logos", [])
     if logos:
@@ -476,7 +478,8 @@ def _build_rich_meta(detail: dict, tmdb_type: str, stremio_type: str) -> dict:
 
     writers = list(
         dict.fromkeys(  # dedupe preserving order
-            p["name"] for p in crew_list
+            p["name"]
+            for p in crew_list
             if p.get("department") == "Writing" and p.get("name")
         )
     )[:5]
@@ -486,7 +489,9 @@ def _build_rich_meta(detail: dict, tmdb_type: str, stremio_type: str) -> dict:
     # Runtime
     if tmdb_type == "movie" and detail.get("runtime"):
         mins = detail["runtime"]
-        meta["runtime"] = f"{mins // 60}h {mins % 60}min" if mins >= 60 else f"{mins}min"
+        meta["runtime"] = (
+            f"{mins // 60}h {mins % 60}min" if mins >= 60 else f"{mins}min"
+        )
     elif tmdb_type == "tv":
         run_times = detail.get("episode_run_time", [])
         if run_times:
@@ -509,11 +514,13 @@ def _build_rich_meta(detail: dict, tmdb_type: str, stremio_type: str) -> dict:
         links.append(link)
 
     for name in directors:
-        links.append({
-            "name": name,
-            "category": "Directors",
-            "url": f"stremio:///search?search={quote_plus(name)}",
-        })
+        links.append(
+            {
+                "name": name,
+                "category": "Directors",
+                "url": f"stremio:///search?search={quote_plus(name)}",
+            }
+        )
 
     if links:
         meta["links"] = links
@@ -819,11 +826,15 @@ async def meta_handler(user_key: str, meta_type: str, meta_id: str):
     except Exception as e:
         logger.warning(f"TMDB detail fetch failed for {tmdb_type}/{tmdb_id}: {e}")
         # Return minimal meta so Stremio doesn't show an error
-        response = JSONResponse(content={"meta": {
-            "id": meta_id,
-            "type": meta_type,
-            "name": "",
-        }})
+        response = JSONResponse(
+            content={
+                "meta": {
+                    "id": meta_id,
+                    "type": meta_type,
+                    "name": "",
+                }
+            }
+        )
         return response
 
 
