@@ -175,7 +175,9 @@ def _add_missing_columns():
         # Ensure index on imdb_id
         try:
             db.execute(
-                text("CREATE INDEX IF NOT EXISTS idx_imdb_id ON media_metadata (imdb_id)")
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_imdb_id ON media_metadata (imdb_id)"
+                )
             )
             db.commit()
         except Exception:
