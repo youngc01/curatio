@@ -886,11 +886,10 @@ async def meta_handler(user_key: str, meta_type: str, meta_id: str):
 
         meta = _build_rich_meta(detail, tmdb_type, meta_type)
 
-        # Series: fetch episode videos for the last 2 seasons
+        # Series: fetch episode videos for all seasons
         if tmdb_type == "tv" and detail.get("number_of_seasons"):
             seasons = detail.get("seasons", [])
             regular_seasons = [s for s in seasons if s.get("season_number", 0) > 0]
-            recent_seasons = regular_seasons[-2:]
 
             async def _fetch_season(s_num: int):
                 try:
@@ -899,7 +898,7 @@ async def meta_handler(user_key: str, meta_type: str, meta_id: str):
                     return None
 
             season_results = await asyncio.gather(
-                *[_fetch_season(s["season_number"]) for s in recent_seasons]
+                *[_fetch_season(s["season_number"]) for s in regular_seasons]
             )
 
             videos = []
