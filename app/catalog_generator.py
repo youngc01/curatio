@@ -560,6 +560,7 @@ class CatalogGenerator:
                     "genres": metadata.genres or [],
                     "rating": metadata.vote_average,
                     "description": metadata.overview or "",
+                    "backdrop": metadata.backdrop_path,
                     "rank": content.rank,
                 }
             )

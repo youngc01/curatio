@@ -408,6 +408,9 @@ def _build_stremio_metas(items: list, catalog_type: str) -> list:
         if item.get("genres"):
             meta["genres"] = item["genres"]
 
+        if item.get("backdrop"):
+            meta["background"] = f"https://image.tmdb.org/t/p/w1280{item['backdrop']}"
+
         metas.append(meta)
     return metas
 
