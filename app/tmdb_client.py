@@ -123,15 +123,29 @@ class TMDBClient:
         """Get detailed movie information (includes external_ids for IMDB)."""
         return await self._request(
             f"/movie/{tmdb_id}",
-            params={"append_to_response": "credits,keywords,external_ids"},
+            params={
+                "append_to_response": "credits,keywords,external_ids,images",
+                "include_image_language": "en,null",
+            },
         )
 
     async def get_tv_show(self, tmdb_id: int) -> Dict:
         """Get detailed TV show information (includes external_ids for IMDB)."""
         return await self._request(
             f"/tv/{tmdb_id}",
-            params={"append_to_response": "credits,keywords,external_ids"},
+            params={
+                "append_to_response": "credits,keywords,external_ids,images",
+                "include_image_language": "en,null",
+            },
         )
+
+    async def get_similar_movies(self, tmdb_id: int, page: int = 1) -> Dict:
+        """Get movies similar to the given movie."""
+        return await self._request(f"/movie/{tmdb_id}/similar", params={"page": page})
+
+    async def get_similar_tv_shows(self, tmdb_id: int, page: int = 1) -> Dict:
+        """Get TV shows similar to the given show."""
+        return await self._request(f"/tv/{tmdb_id}/similar", params={"page": page})
 
     async def get_popular_movies(self, page: int = 1) -> Dict:
         """Get popular movies."""
