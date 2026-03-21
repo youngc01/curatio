@@ -124,7 +124,7 @@ class TMDBClient:
         return await self._request(
             f"/movie/{tmdb_id}",
             params={
-                "append_to_response": "credits,keywords,external_ids,images",
+                "append_to_response": "credits,keywords,external_ids,images,videos",
                 "include_image_language": "en,null",
             },
         )
@@ -134,10 +134,14 @@ class TMDBClient:
         return await self._request(
             f"/tv/{tmdb_id}",
             params={
-                "append_to_response": "credits,keywords,external_ids,images",
+                "append_to_response": "credits,keywords,external_ids,images,videos",
                 "include_image_language": "en,null",
             },
         )
+
+    async def get_tv_season(self, tmdb_id: int, season_number: int) -> Dict:
+        """Get detailed information for a specific TV season."""
+        return await self._request(f"/tv/{tmdb_id}/season/{season_number}")
 
     async def get_similar_movies(self, tmdb_id: int, page: int = 1) -> Dict:
         """Get movies similar to the given movie."""
@@ -575,6 +579,25 @@ class TMDBClient:
             original_title = item.get("original_name")
             release_date = item.get("first_air_date", "")
 
+        # Extract imdb_id from external_ids (only present in detail responses)
+        imdb_id = (
+            item.get("external_ids", {}).get("imdb_id")
+            if isinstance(item.get("external_ids"), dict)
+            else None
+        )
+
+        # Extract logo path (prefer English logos)
+        logo_path = None
+        logos = (
+            item.get("images", {}).get("logos", [])
+            if isinstance(item.get("images"), dict)
+            else []
+        )
+        if logos:
+            en_logos = [lg for lg in logos if lg.get("iso_639_1") in ("en", None)]
+            chosen = en_logos[0] if en_logos else logos[0]
+            logo_path = chosen.get("file_path")
+
         return {
             "tmdb_id": item["id"],
             "media_type": media_type,
@@ -597,6 +620,8 @@ class TMDBClient:
             ),
             "poster_path": item.get("poster_path"),
             "backdrop_path": item.get("backdrop_path"),
+            "imdb_id": imdb_id,
+            "logo_path": logo_path,
             "vote_average": item.get("vote_average"),
             "vote_count": item.get("vote_count"),
             "popularity": item.get("popularity"),

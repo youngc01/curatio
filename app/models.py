@@ -278,6 +278,9 @@ class MediaMetadata(Base):
     poster_path = Column(String(200), nullable=True)
     backdrop_path = Column(String(200), nullable=True)
 
+    imdb_id = Column(String(20), nullable=True, index=True)
+    logo_path = Column(String(200), nullable=True)
+
     original_language = Column(String(10), nullable=True)
     adult = Column(Boolean, default=False, nullable=True)
 

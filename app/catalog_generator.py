@@ -561,6 +561,8 @@ class CatalogGenerator:
                     "rating": metadata.vote_average,
                     "description": metadata.overview or "",
                     "backdrop": metadata.backdrop_path,
+                    "imdb_id": metadata.imdb_id,
+                    "logo": metadata.logo_path,
                     "rank": content.rank,
                 }
             )

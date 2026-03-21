@@ -35,6 +35,7 @@ from app.models import (
     OAuthState,
     InviteCode,
     AdminSetting,
+    MediaMetadata,
 )
 from app.catalog_generator import CatalogGenerator
 from app.trakt_client import trakt_client
@@ -412,6 +413,14 @@ def _build_stremio_metas(items: list, catalog_type: str) -> list:
         if item.get("backdrop"):
             meta["background"] = f"https://image.tmdb.org/t/p/w1280{item['backdrop']}"
 
+        if item.get("imdb_id"):
+            meta["imdb_id"] = item["imdb_id"]
+            if catalog_type == "movie":
+                meta["behaviorHints"] = {"defaultVideoId": item["imdb_id"]}
+
+        if item.get("logo"):
+            meta["logo"] = f"https://image.tmdb.org/t/p/w500{item['logo']}"
+
         metas.append(meta)
     return metas
 
@@ -525,6 +534,31 @@ def _build_rich_meta(detail: dict, tmdb_type: str, stremio_type: str) -> dict:
     if links:
         meta["links"] = links
 
+    # IMDb ID and behavior hints
+    imdb_id = (
+        detail.get("external_ids", {}).get("imdb_id")
+        if isinstance(detail.get("external_ids"), dict)
+        else None
+    )
+    if imdb_id:
+        meta["imdb_id"] = imdb_id
+        if tmdb_type == "movie":
+            meta["behaviorHints"] = {"defaultVideoId": imdb_id}
+
+    # Trailers from videos
+    videos = (
+        detail.get("videos", {}).get("results", [])
+        if isinstance(detail.get("videos"), dict)
+        else []
+    )
+    trailers = [
+        {"source": v["key"], "type": "Trailer"}
+        for v in videos
+        if v.get("type") == "Trailer" and v.get("site") == "YouTube" and v.get("key")
+    ][:5]
+    if trailers:
+        meta["trailers"] = trailers
+
     return meta
 
 
@@ -539,6 +573,42 @@ def _meta_cache_evict():
     while len(_meta_cache) > _META_CACHE_MAX:
         oldest_key = min(_meta_cache, key=lambda k: _meta_cache[k][0])
         del _meta_cache[oldest_key]
+
+
+def _opportunistic_backfill(tmdb_id: int, tmdb_type: str, detail: dict):
+    """Update DB row with imdb_id/logo_path if missing (fire-and-forget)."""
+    try:
+        ext_ids = detail.get("external_ids", {})
+        imdb_id = ext_ids.get("imdb_id") if isinstance(ext_ids, dict) else None
+
+        logos = (
+            detail.get("images", {}).get("logos", [])
+            if isinstance(detail.get("images"), dict)
+            else []
+        )
+        logo_path = None
+        if logos:
+            en_logos = [lg for lg in logos if lg.get("iso_639_1") in ("en", None)]
+            chosen = en_logos[0] if en_logos else logos[0]
+            logo_path = chosen.get("file_path")
+
+        if not imdb_id and not logo_path:
+            return
+
+        with get_db() as db:
+            row = (
+                db.query(MediaMetadata)
+                .filter_by(tmdb_id=tmdb_id, media_type=tmdb_type)
+                .first()
+            )
+            if row and (not row.imdb_id or not row.logo_path):
+                if imdb_id and not row.imdb_id:
+                    row.imdb_id = imdb_id
+                if logo_path and not row.logo_path:
+                    row.logo_path = logo_path
+                db.commit()
+    except Exception as e:
+        logger.debug(f"Opportunistic backfill failed for {tmdb_type}/{tmdb_id}: {e}")
 
 
 # ---- LRU catalog cache with TTL ----
@@ -815,6 +885,47 @@ async def meta_handler(user_key: str, meta_type: str, meta_id: str):
             detail = await tmdb_client.get_tv_show(tmdb_id)
 
         meta = _build_rich_meta(detail, tmdb_type, meta_type)
+
+        # Series: fetch episode videos for the last 2 seasons
+        if tmdb_type == "tv" and detail.get("number_of_seasons"):
+            seasons = detail.get("seasons", [])
+            regular_seasons = [s for s in seasons if s.get("season_number", 0) > 0]
+            recent_seasons = regular_seasons[-2:]
+
+            async def _fetch_season(s_num: int):
+                try:
+                    return await tmdb_client.get_tv_season(tmdb_id, s_num)
+                except Exception:
+                    return None
+
+            season_results = await asyncio.gather(
+                *[_fetch_season(s["season_number"]) for s in recent_seasons]
+            )
+
+            videos = []
+            for season_data in season_results:
+                if not season_data:
+                    continue
+                for ep in season_data.get("episodes", []):
+                    video = {
+                        "id": f"tmdb:{tmdb_id}:{ep.get('season_number', 0)}:{ep['episode_number']}",
+                        "title": ep.get("name", f"Episode {ep['episode_number']}"),
+                        "season": ep.get("season_number", 0),
+                        "episode": ep["episode_number"],
+                        "overview": ep.get("overview", ""),
+                        "released": ep.get("air_date", ""),
+                    }
+                    if ep.get("still_path"):
+                        video["thumbnail"] = (
+                            f"https://image.tmdb.org/t/p/w300{ep['still_path']}"
+                        )
+                    videos.append(video)
+
+            if videos:
+                meta["videos"] = videos
+
+        # Opportunistic backfill: update DB with imdb_id/logo_path if missing
+        _opportunistic_backfill(tmdb_id, tmdb_type, detail)
 
         _meta_cache[cache_key] = (now, meta)
         _meta_cache_evict()
