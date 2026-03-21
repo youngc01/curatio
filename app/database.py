@@ -160,6 +160,8 @@ def _add_missing_columns():
         ("media_metadata", "number_of_seasons", "INTEGER"),
         ("media_metadata", "number_of_episodes", "INTEGER"),
         ("media_metadata", "raw_data", "JSON"),
+        ("media_metadata", "imdb_id", "VARCHAR(20)"),
+        ("media_metadata", "logo_path", "VARCHAR(200)"),
     ]
     with get_db() as db:
         for table, column, col_type in migrations:
@@ -170,3 +172,11 @@ def _add_missing_columns():
                 logger.info(f"Adding missing column {table}.{column}")
                 db.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
                 db.commit()
+        # Ensure index on imdb_id
+        try:
+            db.execute(
+                text("CREATE INDEX IF NOT EXISTS idx_imdb_id ON media_metadata (imdb_id)")
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
