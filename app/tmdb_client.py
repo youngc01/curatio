@@ -580,13 +580,21 @@ class TMDBClient:
             release_date = item.get("first_air_date", "")
 
         # Extract imdb_id from external_ids (only present in detail responses)
-        imdb_id = item.get("external_ids", {}).get("imdb_id") if isinstance(item.get("external_ids"), dict) else None
+        imdb_id = (
+            item.get("external_ids", {}).get("imdb_id")
+            if isinstance(item.get("external_ids"), dict)
+            else None
+        )
 
         # Extract logo path (prefer English logos)
         logo_path = None
-        logos = item.get("images", {}).get("logos", []) if isinstance(item.get("images"), dict) else []
+        logos = (
+            item.get("images", {}).get("logos", [])
+            if isinstance(item.get("images"), dict)
+            else []
+        )
         if logos:
-            en_logos = [l for l in logos if l.get("iso_639_1") in ("en", None)]
+            en_logos = [lg for lg in logos if lg.get("iso_639_1") in ("en", None)]
             chosen = en_logos[0] if en_logos else logos[0]
             logo_path = chosen.get("file_path")
 

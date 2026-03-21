@@ -535,14 +535,22 @@ def _build_rich_meta(detail: dict, tmdb_type: str, stremio_type: str) -> dict:
         meta["links"] = links
 
     # IMDb ID and behavior hints
-    imdb_id = detail.get("external_ids", {}).get("imdb_id") if isinstance(detail.get("external_ids"), dict) else None
+    imdb_id = (
+        detail.get("external_ids", {}).get("imdb_id")
+        if isinstance(detail.get("external_ids"), dict)
+        else None
+    )
     if imdb_id:
         meta["imdb_id"] = imdb_id
         if tmdb_type == "movie":
             meta["behaviorHints"] = {"defaultVideoId": imdb_id}
 
     # Trailers from videos
-    videos = detail.get("videos", {}).get("results", []) if isinstance(detail.get("videos"), dict) else []
+    videos = (
+        detail.get("videos", {}).get("results", [])
+        if isinstance(detail.get("videos"), dict)
+        else []
+    )
     trailers = [
         {"source": v["key"], "type": "Trailer"}
         for v in videos
@@ -573,10 +581,14 @@ def _opportunistic_backfill(tmdb_id: int, tmdb_type: str, detail: dict):
         ext_ids = detail.get("external_ids", {})
         imdb_id = ext_ids.get("imdb_id") if isinstance(ext_ids, dict) else None
 
-        logos = detail.get("images", {}).get("logos", []) if isinstance(detail.get("images"), dict) else []
+        logos = (
+            detail.get("images", {}).get("logos", [])
+            if isinstance(detail.get("images"), dict)
+            else []
+        )
         logo_path = None
         if logos:
-            en_logos = [l for l in logos if l.get("iso_639_1") in ("en", None)]
+            en_logos = [lg for lg in logos if lg.get("iso_639_1") in ("en", None)]
             chosen = en_logos[0] if en_logos else logos[0]
             logo_path = chosen.get("file_path")
 
@@ -584,9 +596,11 @@ def _opportunistic_backfill(tmdb_id: int, tmdb_type: str, detail: dict):
             return
 
         with get_db() as db:
-            row = db.query(MediaMetadata).filter_by(
-                tmdb_id=tmdb_id, media_type=tmdb_type
-            ).first()
+            row = (
+                db.query(MediaMetadata)
+                .filter_by(tmdb_id=tmdb_id, media_type=tmdb_type)
+                .first()
+            )
             if row and (not row.imdb_id or not row.logo_path):
                 if imdb_id and not row.imdb_id:
                     row.imdb_id = imdb_id
@@ -902,7 +916,9 @@ async def meta_handler(user_key: str, meta_type: str, meta_id: str):
                         "released": ep.get("air_date", ""),
                     }
                     if ep.get("still_path"):
-                        video["thumbnail"] = f"https://image.tmdb.org/t/p/w300{ep['still_path']}"
+                        video["thumbnail"] = (
+                            f"https://image.tmdb.org/t/p/w300{ep['still_path']}"
+                        )
                     videos.append(video)
 
             if videos:
