@@ -143,6 +143,14 @@ class TMDBClient:
         """Get detailed information for a specific TV season."""
         return await self._request(f"/tv/{tmdb_id}/season/{season_number}")
 
+    async def get_trending_movies(self, time_window: str = "day") -> Dict:
+        """Get trending movies (day or week)."""
+        return await self._request(f"/trending/movie/{time_window}")
+
+    async def get_trending_tv_shows(self, time_window: str = "day") -> Dict:
+        """Get trending TV shows (day or week)."""
+        return await self._request(f"/trending/tv/{time_window}")
+
     async def get_similar_movies(self, tmdb_id: int, page: int = 1) -> Dict:
         """Get movies similar to the given movie."""
         return await self._request(f"/movie/{tmdb_id}/similar", params={"page": page})

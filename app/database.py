@@ -182,3 +182,62 @@ def _add_missing_columns():
             db.commit()
         except Exception:
             db.rollback()
+
+        # --- User model migrations for scrobble support ---
+        user_migrations = [
+            ("users", "auth_source", "VARCHAR(20) DEFAULT 'trakt' NOT NULL"),
+            ("users", "display_name", "VARCHAR(200)"),
+        ]
+        for table, column, col_type in user_migrations:
+            try:
+                db.execute(text(f"SELECT {column} FROM {table} LIMIT 1"))
+            except Exception:
+                db.rollback()
+                logger.info(f"Adding missing column {table}.{column}")
+                db.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+                db.commit()
+
+        # Make trakt_user_id nullable (was NOT NULL)
+        try:
+            db.execute(
+                text("ALTER TABLE users ALTER COLUMN trakt_user_id DROP NOT NULL")
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+
+        # Make trakt tokens nullable
+        for col in [
+            "trakt_access_token",
+            "trakt_refresh_token",
+            "trakt_token_expires_at",
+        ]:
+            try:
+                db.execute(text(f"ALTER TABLE users ALTER COLUMN {col} DROP NOT NULL"))
+                db.commit()
+            except Exception:
+                db.rollback()
+
+        # Drop the old unique constraint on trakt_user_id if it exists,
+        # replaced by partial unique index in the model
+        try:
+            db.execute(
+                text(
+                    "ALTER TABLE users DROP CONSTRAINT IF EXISTS users_trakt_user_id_key"
+                )
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+
+        # Create partial unique index for trakt_user_id (only non-NULL)
+        try:
+            db.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_trakt_user_id_unique "
+                    "ON users (trakt_user_id) WHERE trakt_user_id IS NOT NULL"
+                )
+            )
+            db.commit()
+        except Exception:
+            db.rollback()

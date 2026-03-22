@@ -36,10 +36,14 @@ from app.models import (
     InviteCode,
     AdminSetting,
     MediaMetadata,
+    WatchEvent,
 )
 from app.catalog_generator import CatalogGenerator
 from app.trakt_client import trakt_client
 from app.crypto import encrypt_token, decrypt_token
+from pydantic import BaseModel
+from typing import Optional, Literal
+
 from app.landing import landing_page_html, auth_success_html, auth_error_html
 from app.admin import router as admin_router, load_settings_from_db
 
@@ -133,6 +137,50 @@ def _schedule_user_sync(user_id: int, access_token: str):
         logger.info(f"Scheduled background Trakt sync for user {user_id}")
     except RuntimeError:
         logger.warning("No event loop — skipping background sync")
+
+
+class ScrobbleRequest(BaseModel):
+    """Payload sent by the custom Stremio client on playback completion."""
+
+    tmdb_id: int
+    media_type: Literal["movie", "tv"]
+    action: Literal["complete"] = "complete"
+    season: Optional[int] = None
+    episode: Optional[int] = None
+    title: Optional[str] = None
+
+
+# Debounce tracking for local catalog rebuilds
+_last_local_sync: dict[int, float] = {}
+_LOCAL_SYNC_DEBOUNCE = 1800  # 30 minutes
+
+
+def _schedule_local_sync(user_id: int):
+    """Fire-and-forget background task to rebuild a local user's catalogs."""
+    now = time()
+    last = _last_local_sync.get(user_id, 0)
+    if now - last < _LOCAL_SYNC_DEBOUNCE:
+        return  # debounce — too soon since last sync
+
+    _last_local_sync[user_id] = now
+
+    async def _do_sync():
+        from workers.trakt_sync import sync_local_user_catalogs
+
+        try:
+            with get_db() as db:
+                user = db.query(User).filter(User.id == user_id).first()
+                if user:
+                    await sync_local_user_catalogs(user, db)
+        except Exception as e:
+            logger.error(f"Background local sync failed for user {user_id}: {e}")
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_do_sync())
+        logger.info(f"Scheduled background local sync for user {user_id}")
+    except RuntimeError:
+        logger.warning("No event loop — skipping background local sync")
 
 
 # Initialize FastAPI app
@@ -366,7 +414,7 @@ async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
     manifest_data = {
         "id": f"ai.recommendations.{user_key}",
         "version": "1.0.0",
-        "name": f"{settings.addon_name} - {user.trakt_username or 'Personal'}",
+        "name": f"{settings.addon_name} - {user.trakt_username or user.display_name or 'Personal'}",
         "description": "AI-powered Netflix-style content discovery personalized for you",
         "resources": ["catalog", "meta"],
         "types": ["movie", "series"],
@@ -1020,6 +1068,109 @@ async def similar_catalog(user_key: str, catalog_type: str, meta_id: str):
     except Exception as e:
         logger.warning(f"TMDB similar fetch failed for {tmdb_type}/{tmdb_id}: {e}")
         return JSONResponse(content={"metas": []})
+
+
+# ---------------------------------------------------------------------------
+# Scrobble registration and event endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post("/auth/register")
+async def register_local_user(
+    invite: str = "",
+    name: str = "",
+):
+    """Register a local (scrobble-only) user without Trakt.
+
+    Validates invite code or master password, creates a user with a unique
+    user_key, and returns the manifest URL.
+    """
+    if not invite:
+        raise HTTPException(status_code=403, detail="Invite code required")
+
+    with get_db() as db_session:
+        # Check invite code first
+        invite_row = (
+            db_session.query(InviteCode)
+            .filter(InviteCode.code == invite, InviteCode.is_used.is_(False))
+            .first()
+        )
+        if invite_row:
+            if invite_row.expires_at and datetime.utcnow() > invite_row.expires_at:
+                raise HTTPException(status_code=403, detail="Invite code has expired")
+            # Mark invite as used
+            invite_row.is_used = True
+            invite_row.used_at = datetime.utcnow()
+            invite_row.used_by = name or "local-user"
+        elif invite != settings.master_password:
+            raise HTTPException(status_code=403, detail="Invalid invite code")
+
+        user_key = secrets.token_urlsafe(32)
+        user = User(
+            user_key=user_key,
+            auth_source="local",
+            display_name=name or None,
+        )
+        db_session.add(user)
+        db_session.commit()
+
+    manifest_url = f"{settings.base_url}/{user_key}/manifest.json"
+    return {
+        "user_key": user_key,
+        "manifest_url": manifest_url,
+    }
+
+
+@app.post("/{user_key}/scrobble")
+async def scrobble(
+    user_key: str,
+    payload: ScrobbleRequest,
+):
+    """Record a completed watch event from the custom Stremio client.
+
+    Only ``action='complete'`` events are accepted (client sends this when
+    <= 15 minutes of content remain).  Duplicate events for the same item
+    within 60 seconds are silently ignored.
+    """
+    with get_db() as db:
+        user = db.query(User).filter(User.user_key == user_key).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Not found")
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="User is inactive")
+
+        # Deduplicate: ignore if same item completed within 60 seconds
+        cutoff = datetime.utcnow() - timedelta(seconds=60)
+        existing = (
+            db.query(WatchEvent.id)
+            .filter(
+                WatchEvent.user_id == user.id,
+                WatchEvent.tmdb_id == payload.tmdb_id,
+                WatchEvent.media_type == payload.media_type,
+                WatchEvent.action == "complete",
+                WatchEvent.created_at >= cutoff,
+            )
+            .first()
+        )
+        if existing:
+            return {"status": "ok", "deduplicated": True}
+
+        event = WatchEvent(
+            user_id=user.id,
+            tmdb_id=payload.tmdb_id,
+            media_type=payload.media_type,
+            season=payload.season,
+            episode=payload.episode,
+            action="complete",
+            title=payload.title,
+        )
+        db.add(event)
+        db.commit()
+
+        # Trigger debounced catalog rebuild + metadata backfill
+        _schedule_local_sync(user.id)
+
+    return {"status": "ok"}
 
 
 @app.get("/auth/verify-invite")
