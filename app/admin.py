@@ -21,6 +21,7 @@ from app.database import get_db
 from app.models import (
     AdminSetting,
     AdminSession,
+    AppPairingSession,
     InviteCode,
     Tag,
     MovieTag,
@@ -29,6 +30,7 @@ from app.models import (
     UniversalCatalogContent,
     User,
     UserCatalog,
+    UserSession,
     TaggingJob,
 )
 
@@ -1193,6 +1195,114 @@ async def set_aiostreams_config(request: Request, _=Depends(verify_admin)):
     return {"status": "ok"}
 
 
+# ---- 2FA Reset ----
+
+
+@router.post("/api/users/{user_id}/reset-2fa")
+async def reset_user_2fa(user_id: int, request: Request, _=Depends(verify_admin)):
+    """Disable 2FA for a user (admin override)."""
+    with get_db() as db:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+        if not user.totp_enabled:
+            raise HTTPException(400, "User does not have 2FA enabled")
+        user.totp_enabled = False
+        user.totp_secret = None
+        db.commit()
+        logger.info(f"Admin reset 2FA for user {user_id}")
+    return {"status": "ok"}
+
+
+# ---- Sessions Management ----
+
+
+@router.get("/api/sessions")
+async def list_sessions(request: Request, _=Depends(verify_admin)):
+    """List all active user sessions and pairing sessions."""
+    now = datetime.utcnow()
+    with get_db() as db:
+        # User web sessions
+        user_sessions = (
+            db.query(UserSession, User)
+            .join(User, UserSession.user_id == User.id)
+            .filter(UserSession.expires_at > now)
+            .order_by(UserSession.created_at.desc())
+            .all()
+        )
+        web_sessions = [
+            {
+                "token": s.token[:8] + "...",
+                "token_full": s.token,
+                "user_id": s.user_id,
+                "username": u.trakt_username
+                or u.display_name
+                or u.email
+                or f"User #{u.id}",
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+                "expires_at": s.expires_at.isoformat() if s.expires_at else None,
+                "type": "web",
+            }
+            for s, u in user_sessions
+        ]
+
+        # Pairing sessions (only unclaimed and not expired)
+        pairing_sessions = (
+            db.query(AppPairingSession, User)
+            .join(User, AppPairingSession.user_id == User.id)
+            .filter(
+                AppPairingSession.expires_at > now,
+                AppPairingSession.claimed == False,  # noqa: E712
+            )
+            .order_by(AppPairingSession.created_at.desc())
+            .all()
+        )
+        pairing = [
+            {
+                "token": s.token[:8] + "...",
+                "token_full": s.token,
+                "user_id": s.user_id,
+                "username": u.trakt_username
+                or u.display_name
+                or u.email
+                or f"User #{u.id}",
+                "short_code": s.short_code,
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+                "expires_at": s.expires_at.isoformat() if s.expires_at else None,
+                "type": "pairing",
+            }
+            for s, u in pairing_sessions
+        ]
+
+    return {"web_sessions": web_sessions, "pairing_sessions": pairing}
+
+
+@router.delete("/api/sessions/web/{token}")
+async def revoke_web_session(token: str, request: Request, _=Depends(verify_admin)):
+    """Revoke a user's web login session."""
+    with get_db() as db:
+        deleted = db.query(UserSession).filter(UserSession.token == token).delete()
+        if not deleted:
+            raise HTTPException(404, "Session not found")
+    logger.info(f"Admin revoked web session {token[:8]}...")
+    return {"status": "ok"}
+
+
+@router.delete("/api/sessions/pairing/{token}")
+async def revoke_pairing_session(token: str, request: Request, _=Depends(verify_admin)):
+    """Revoke an active pairing session."""
+    with get_db() as db:
+        deleted = (
+            db.query(AppPairingSession)
+            .filter(AppPairingSession.token == token)
+            .delete()
+        )
+        if not deleted:
+            raise HTTPException(404, "Pairing session not found")
+    logger.info(f"Admin revoked pairing session {token[:8]}...")
+    return {"status": "ok"}
+
+
 # ---- HTML Page ----
 
 
@@ -1429,6 +1539,7 @@ tr:last-child td{border-bottom:none}
     <button class="tab-btn active" data-tab="overview">Overview</button>
     <button class="tab-btn" data-tab="invites">Invites</button>
     <button class="tab-btn" data-tab="users">Users</button>
+    <button class="tab-btn" data-tab="sessions">Sessions</button>
     <button class="tab-btn" data-tab="settings">Settings</button>
     <button class="tab-btn" data-tab="build">Build</button>
     <button class="tab-btn" data-tab="schedule">Schedule</button>
@@ -1511,13 +1622,40 @@ tr:last-child td{border-bottom:none}
     <!-- USERS TAB -->
     <div class="tab-panel" id="tab-users">
       <div class="card">
-        <h3>Trakt Users</h3>
+        <h3>Users</h3>
         <p style="color:#8b949e;font-size:13px;margin-bottom:20px">
-          All users who have connected their Trakt accounts.
+          All registered users (Trakt OAuth and local email/password accounts).
+        </p>
+        <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>User</th><th>Email</th><th>Source</th><th>2FA</th><th>Bandwidth</th><th>Status</th><th>Created</th><th>Last Login</th><th>Catalogs</th><th>Actions</th></tr></thead>
+          <tbody id="users-tbody"><tr><td colspan="10" style="color:#8b949e">Loading...</td></tr></tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- SESSIONS TAB -->
+    <div class="tab-panel" id="tab-sessions">
+      <div class="card">
+        <h3>Active Web Sessions</h3>
+        <p style="color:#8b949e;font-size:13px;margin-bottom:20px">
+          Active user login sessions. Revoking a session will force the user to log in again.
         </p>
         <table>
-          <thead><tr><th>Username</th><th>Trakt ID</th><th>User Key</th><th>Status</th><th>Created</th><th>Last Login</th><th>Last Sync</th><th>Catalogs</th><th>Actions</th></tr></thead>
-          <tbody id="users-tbody"><tr><td colspan="9" style="color:#8b949e">Loading...</td></tr></tbody>
+          <thead><tr><th>User</th><th>Token</th><th>Created</th><th>Expires</th><th>Actions</th></tr></thead>
+          <tbody id="web-sessions-tbody"><tr><td colspan="5" style="color:#8b949e">Loading...</td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h3>Active Pairing Sessions</h3>
+        <p style="color:#8b949e;font-size:13px;margin-bottom:20px">
+          Pending app pairing sessions (QR code / short code). These expire after 5 minutes.
+        </p>
+        <table>
+          <thead><tr><th>User</th><th>Short Code</th><th>Token</th><th>Created</th><th>Expires</th><th>Actions</th></tr></thead>
+          <tbody id="pairing-sessions-tbody"><tr><td colspan="6" style="color:#8b949e">Loading...</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -1638,6 +1776,26 @@ tr:last-child td{border-bottom:none}
       </div>
 
       <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+
+      <div class="card" style="margin-top:24px">
+        <h3>AIOStreams Configuration</h3>
+        <p style="color:#8b949e;font-size:13px;margin-bottom:20px">
+          Stream proxy URLs for AIOStreams. Separate URLs for low and high bandwidth tiers.
+        </p>
+        <div class="card-row">
+          <div class="form-group">
+            <label>Low Bandwidth URL</label>
+            <input type="text" id="set-aio-low-url" placeholder="https://...">
+            <div class="hint">Stream proxy URL for users on the low bandwidth tier.</div>
+          </div>
+          <div class="form-group">
+            <label>High Bandwidth URL</label>
+            <input type="text" id="set-aio-high-url" placeholder="https://...">
+            <div class="hint">Stream proxy URL for users on the high bandwidth tier.</div>
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="saveAIOStreams()">Save AIOStreams Config</button>
+      </div>
     </div>
 
     <!-- BUILD TAB -->
@@ -1847,7 +2005,7 @@ async function checkAuth() {
 
 // ---- Data Loading ----
 async function loadAll() {
-  await Promise.all([loadStats(), loadSettings(), loadBuildStatus(), loadInvites(), loadUsers()]);
+  await Promise.all([loadStats(), loadSettings(), loadBuildStatus(), loadInvites(), loadUsers(), loadSessions(), loadAIOStreams()]);
   // If a build is running, start polling logs automatically
   try {
     const s = await api('GET', '/admin/api/build/status');
@@ -2294,7 +2452,7 @@ async function loadUsers() {
     var users = await api('GET', '/admin/api/users');
     var tbody = document.getElementById('users-tbody');
     if (users.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="9" style="color:#8b949e">No users yet. Share invite codes to get started.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="10" style="color:#8b949e">No users yet. Share invite codes to get started.</td></tr>';
       return;
     }
     tbody.innerHTML = users.map(function(u) {
@@ -2303,19 +2461,35 @@ async function loadUsers() {
         : '<span class="badge badge-failed">Disabled</span>';
       var toggleLabel = u.is_active ? 'Disable' : 'Enable';
       var toggleClass = u.is_active ? 'btn-secondary' : 'btn-primary';
+      var displayName = u.display_name || u.trakt_username || 'User #' + u.id;
+      var sourceBadge = u.auth_source === 'local'
+        ? '<span class="badge" style="background:#1f6feb33;color:#58a6ff">Local</span>'
+        : '<span class="badge" style="background:#23863533;color:#3fb950">Trakt</span>';
+      var tfaBadge = u.totp_enabled
+        ? '<span class="badge badge-completed">On</span>'
+        : '<span style="color:#8b949e">Off</span>';
+      var bwSelect = '<select onchange="setBandwidth(' + u.id + ',this.value)" style="background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:4px;padding:4px 8px;font-size:12px">' +
+        '<option value="high"' + (u.bandwidth_tier === 'high' ? ' selected' : '') + '>High</option>' +
+        '<option value="low"' + (u.bandwidth_tier === 'low' ? ' selected' : '') + '>Low</option></select>';
+      var actions = '<button class="btn ' + toggleClass + ' btn-sm" onclick="toggleUser(' + u.id + ')" style="margin-right:4px">' + toggleLabel + '</button>';
+      if (u.totp_enabled) {
+        actions += '<button class="btn btn-secondary btn-sm" onclick="reset2FA(' + u.id + ',\\'' + displayName.replace(/'/g, "\\\\'") + '\\')" style="margin-right:4px">Reset 2FA</button>';
+      }
+      actions += '<button class="btn btn-danger btn-sm" onclick="deleteUser(' + u.id + ',\\'' + (u.trakt_username || '').replace(/'/g, "\\\\'") + '\\')">Delete</button>';
       return '<tr>' +
-        '<td><strong>' + (u.trakt_username || '-') + '</strong></td>' +
-        '<td>' + u.trakt_user_id + '</td>' +
-        '<td style="font-family:monospace;font-size:12px">' + u.user_key + '</td>' +
+        '<td><strong>' + displayName + '</strong>' +
+          (u.trakt_user_id ? '<div style="font-size:11px;color:#8b949e">Trakt: ' + u.trakt_user_id + '</div>' : '') +
+          '<div style="font-family:monospace;font-size:11px;color:#8b949e">' + u.user_key + '</div>' +
+        '</td>' +
+        '<td>' + (u.email || '<span style="color:#8b949e">-</span>') + '</td>' +
+        '<td>' + sourceBadge + '</td>' +
+        '<td>' + tfaBadge + '</td>' +
+        '<td>' + bwSelect + '</td>' +
         '<td>' + status + '</td>' +
         '<td>' + fmtDate(u.created_at) + '</td>' +
         '<td>' + fmtDate(u.last_login) + '</td>' +
-        '<td>' + (u.last_sync ? fmtDate(u.last_sync) : 'Never') + '</td>' +
         '<td>' + u.catalog_count + '</td>' +
-        '<td style="white-space:nowrap">' +
-          '<button class="btn ' + toggleClass + ' btn-sm" onclick="toggleUser(' + u.id + ')" style="margin-right:4px">' + toggleLabel + '</button>' +
-          '<button class="btn btn-danger btn-sm" onclick="deleteUser(' + u.id + ',\\'' + (u.trakt_username || '') + '\\')">Delete</button>' +
-        '</td>' +
+        '<td style="white-space:nowrap">' + actions + '</td>' +
         '</tr>';
     }).join('');
   } catch(e) { if (e.message !== 'auth') console.error(e); }
@@ -2338,6 +2512,113 @@ async function deleteUser(userId, username) {
     toast('User deleted', 'success');
     loadUsers();
     loadStats();
+  } catch(e) {
+    toast('Failed: ' + e.message, 'error');
+  }
+}
+
+// ---- Bandwidth ----
+async function setBandwidth(userId, tier) {
+  try {
+    await api('POST', '/admin/api/users/' + userId + '/bandwidth', { tier: tier });
+    toast('Bandwidth set to ' + tier, 'success');
+  } catch(e) {
+    toast('Failed: ' + e.message, 'error');
+    loadUsers();
+  }
+}
+
+// ---- 2FA Reset ----
+async function reset2FA(userId, username) {
+  if (!confirm('Reset 2FA for ' + username + '?\\n\\nThis will disable their two-factor authentication. They will need to set it up again.')) return;
+  try {
+    await api('POST', '/admin/api/users/' + userId + '/reset-2fa');
+    toast('2FA reset for ' + username, 'success');
+    loadUsers();
+  } catch(e) {
+    toast('Failed: ' + e.message, 'error');
+  }
+}
+
+// ---- Sessions ----
+async function loadSessions() {
+  try {
+    var data = await api('GET', '/admin/api/sessions');
+
+    // Web sessions
+    var wTbody = document.getElementById('web-sessions-tbody');
+    if (data.web_sessions.length === 0) {
+      wTbody.innerHTML = '<tr><td colspan="5" style="color:#8b949e">No active web sessions.</td></tr>';
+    } else {
+      wTbody.innerHTML = data.web_sessions.map(function(s) {
+        return '<tr>' +
+          '<td><strong>' + s.username + '</strong></td>' +
+          '<td style="font-family:monospace;font-size:12px">' + s.token + '</td>' +
+          '<td>' + fmtDate(s.created_at) + '</td>' +
+          '<td>' + fmtDate(s.expires_at) + '</td>' +
+          '<td><button class="btn btn-danger btn-sm" onclick="revokeWebSession(\\'' + s.token_full + '\\',\\'' + s.username.replace(/'/g, "\\\\'") + '\\')">Revoke</button></td>' +
+          '</tr>';
+      }).join('');
+    }
+
+    // Pairing sessions
+    var pTbody = document.getElementById('pairing-sessions-tbody');
+    if (data.pairing_sessions.length === 0) {
+      pTbody.innerHTML = '<tr><td colspan="6" style="color:#8b949e">No active pairing sessions.</td></tr>';
+    } else {
+      pTbody.innerHTML = data.pairing_sessions.map(function(s) {
+        return '<tr>' +
+          '<td><strong>' + s.username + '</strong></td>' +
+          '<td style="font-family:monospace;font-size:14px;letter-spacing:2px">' + s.short_code + '</td>' +
+          '<td style="font-family:monospace;font-size:12px">' + s.token + '</td>' +
+          '<td>' + fmtDate(s.created_at) + '</td>' +
+          '<td>' + fmtDate(s.expires_at) + '</td>' +
+          '<td><button class="btn btn-danger btn-sm" onclick="revokePairingSession(\\'' + s.token_full + '\\',\\'' + s.username.replace(/'/g, "\\\\'") + '\\')">Revoke</button></td>' +
+          '</tr>';
+      }).join('');
+    }
+  } catch(e) { if (e.message !== 'auth') console.error(e); }
+}
+
+async function revokeWebSession(token, username) {
+  if (!confirm('Revoke web session for ' + username + '? They will be logged out.')) return;
+  try {
+    await api('DELETE', '/admin/api/sessions/web/' + encodeURIComponent(token));
+    toast('Session revoked for ' + username, 'success');
+    loadSessions();
+  } catch(e) {
+    toast('Failed: ' + e.message, 'error');
+  }
+}
+
+async function revokePairingSession(token, username) {
+  if (!confirm('Revoke pairing session for ' + username + '?')) return;
+  try {
+    await api('DELETE', '/admin/api/sessions/pairing/' + encodeURIComponent(token));
+    toast('Pairing session revoked', 'success');
+    loadSessions();
+  } catch(e) {
+    toast('Failed: ' + e.message, 'error');
+  }
+}
+
+// ---- AIOStreams ----
+async function loadAIOStreams() {
+  try {
+    var data = await api('GET', '/admin/api/aiostreams-config');
+    document.getElementById('set-aio-low-url').value = data.low_bw_url || '';
+    document.getElementById('set-aio-high-url').value = data.high_bw_url || '';
+  } catch(e) { if (e.message !== 'auth') console.error(e); }
+}
+
+async function saveAIOStreams() {
+  var data = {
+    low_bw_url: document.getElementById('set-aio-low-url').value.trim(),
+    high_bw_url: document.getElementById('set-aio-high-url').value.trim(),
+  };
+  try {
+    await api('POST', '/admin/api/aiostreams-config', data);
+    toast('AIOStreams config saved', 'success');
   } catch(e) {
     toast('Failed: ' + e.message, 'error');
   }
