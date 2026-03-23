@@ -16,7 +16,7 @@ Only digitally-released content — no anticipated/unreleased titles.
 """
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Set
 
 from loguru import logger
@@ -29,7 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.models import User, MovieTag, MediaMetadata
+from app.models import User, MovieTag, MediaMetadata, WatchEvent
 from app.trakt_client import trakt_client
 from app.tmdb_client import tmdb_client
 from app.catalog_generator import CatalogGenerator
@@ -599,6 +599,336 @@ def _pick_byw_seeds(
 
 
 # ---------------------------------------------------------------------------
+# Local (scrobble) sync — builds catalogs from WatchEvent table
+# ---------------------------------------------------------------------------
+
+
+def _pick_byw_seeds_local(
+    db: Session,
+    user_id: int,
+    all_watched_ids: Set[int],
+    max_seeds: int = 5,
+) -> List[Dict]:
+    """Pick BYW seed items from local watch events (most recent completions)."""
+
+    recent = (
+        db.query(
+            WatchEvent.tmdb_id,
+            WatchEvent.media_type,
+            WatchEvent.title,
+            func.max(WatchEvent.created_at).label("last_watched"),
+        )
+        .filter(
+            WatchEvent.user_id == user_id,
+            WatchEvent.action == "complete",
+        )
+        .group_by(WatchEvent.tmdb_id, WatchEvent.media_type, WatchEvent.title)
+        .order_by(func.max(WatchEvent.created_at).desc())
+        .limit(50)
+        .all()
+    )
+
+    seen_ids: Set[int] = set()
+    seeds: List[Dict] = []
+
+    for row in recent:
+        if row.tmdb_id in seen_ids:
+            continue
+        seen_ids.add(row.tmdb_id)
+
+        tag_count = (
+            db.query(func.count(MovieTag.tag_id))
+            .filter(
+                MovieTag.tmdb_id == row.tmdb_id,
+                MovieTag.media_type == row.media_type,
+            )
+            .scalar()
+        )
+
+        if tag_count and tag_count > 0:
+            # Get title from event or MediaMetadata
+            title = row.title
+            if not title:
+                meta = (
+                    db.query(MediaMetadata.title)
+                    .filter(
+                        MediaMetadata.tmdb_id == row.tmdb_id,
+                        MediaMetadata.media_type == row.media_type,
+                    )
+                    .first()
+                )
+                title = meta.title if meta else "Unknown"
+
+            seeds.append(
+                {
+                    "title": title,
+                    "tmdb_id": row.tmdb_id,
+                    "media_type": row.media_type,
+                    "tag_count": tag_count,
+                }
+            )
+
+        if len(seeds) >= max_seeds:
+            break
+
+    logger.info(f"Selected {len(seeds)} local BYW seeds: {[s['title'] for s in seeds]}")
+    return seeds
+
+
+async def sync_local_user_catalogs(user: User, db: Session) -> int:
+    """Build personalized catalogs from local watch events (no Trakt).
+
+    Mirrors sync_user_catalogs() but reads WatchEvent instead of Trakt API.
+    """
+
+    catalog_gen = CatalogGenerator(db)
+    catalogs_created = 0
+    display = user.display_name or user.user_key[:8]
+
+    logger.info(f"Syncing local catalogs for user {display}...")
+
+    # ------------------------------------------------------------------
+    # Step 1: Derive watched items from WatchEvent (action='complete')
+    # ------------------------------------------------------------------
+    completed = (
+        db.query(WatchEvent.tmdb_id, WatchEvent.media_type)
+        .filter(WatchEvent.user_id == user.id, WatchEvent.action == "complete")
+        .distinct()
+        .all()
+    )
+
+    watched_movie_ids: Set[int] = {
+        r.tmdb_id for r in completed if r.media_type == "movie"
+    }
+    watched_show_ids: Set[int] = {r.tmdb_id for r in completed if r.media_type == "tv"}
+
+    logger.info(
+        f"User {display}: "
+        f"{len(watched_movie_ids)} watched movies, "
+        f"{len(watched_show_ids)} watched shows (local)"
+    )
+
+    # ------------------------------------------------------------------
+    # Step 2: "Up Next" — TV shows with recent completions (last 14 days)
+    # ------------------------------------------------------------------
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=14)
+        recent_tv = (
+            db.query(
+                WatchEvent.tmdb_id,
+                func.max(WatchEvent.created_at).label("last_watched"),
+            )
+            .filter(
+                WatchEvent.user_id == user.id,
+                WatchEvent.media_type == "tv",
+                WatchEvent.action == "complete",
+                WatchEvent.created_at >= cutoff,
+            )
+            .group_by(WatchEvent.tmdb_id)
+            .order_by(func.max(WatchEvent.created_at).desc())
+            .all()
+        )
+
+        up_next_ids = [r.tmdb_id for r in recent_tv]
+
+        if up_next_ids:
+            catalog_gen.save_user_catalog(
+                user_id=user.id,
+                slot_id="up-next",
+                name="Up Next",
+                media_type="tv",
+                tmdb_ids=up_next_ids,
+                generation_method="up_next",
+            )
+            catalogs_created += 1
+            logger.info(f"  Up Next: {len(up_next_ids)} shows")
+    except Exception as e:
+        logger.warning(f"  Up Next failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Step 3: "Because You Watched [Title]" — tag-based similarity
+    # ------------------------------------------------------------------
+    byw_seeds = _pick_byw_seeds_local(
+        db, user.id, watched_movie_ids | watched_show_ids, max_seeds=5
+    )
+
+    for i, seed in enumerate(byw_seeds):
+        exclude = (
+            watched_movie_ids if seed["media_type"] == "movie" else watched_show_ids
+        )
+        similar_ids = find_similar_by_tags(
+            db,
+            reference_tmdb_id=seed["tmdb_id"],
+            media_type=seed["media_type"],
+            exclude_ids=exclude,
+            limit=100,
+        )
+
+        if similar_ids:
+            catalog_gen.save_user_catalog(
+                user_id=user.id,
+                slot_id=f"byw-{i + 1}",
+                name=f"Because You Watched {seed['title']}",
+                media_type=seed["media_type"],
+                tmdb_ids=similar_ids,
+                generation_method="because_you_watched",
+                generation_params={
+                    "seed_title": seed["title"],
+                    "seed_tmdb_id": seed["tmdb_id"],
+                },
+            )
+            catalogs_created += 1
+            logger.info(f"  BYW '{seed['title']}': {len(similar_ids)} items")
+
+    # ------------------------------------------------------------------
+    # Step 4: "Recommended For You" — tag-based taste profile
+    # ------------------------------------------------------------------
+    for media_label, watched_ids, media_type, slot in [
+        ("movies", watched_movie_ids, "movie", "rec-movie"),
+        ("shows", watched_show_ids, "tv", "rec-series"),
+    ]:
+        try:
+            tmdb_ids = find_recommendations_by_taste(
+                db,
+                watched_tmdb_ids=watched_ids,
+                media_type=media_type,
+                limit=100,
+            )
+            if tmdb_ids:
+                catalog_gen.save_user_catalog(
+                    user_id=user.id,
+                    slot_id=slot,
+                    name="Recommended For You",
+                    media_type=media_type,
+                    tmdb_ids=tmdb_ids,
+                    generation_method="tag_recommendations",
+                )
+                catalogs_created += 1
+                logger.info(f"  Tag recs ({media_label}): {len(tmdb_ids)} items")
+        except Exception as e:
+            logger.warning(f"  Tag recs ({media_label}) failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Step 5: "Trending Now" — from TMDB (no Trakt needed)
+    # ------------------------------------------------------------------
+    for media_label, media_type, slot in [
+        ("movies", "movie", "trakt-trending-movie"),
+        ("shows", "tv", "trakt-trending-series"),
+    ]:
+        try:
+            data = (
+                await tmdb_client.get_trending_movies()
+                if media_type == "movie"
+                else await tmdb_client.get_trending_tv_shows()
+            )
+            tmdb_ids = [r["id"] for r in data.get("results", []) if r.get("id")]
+            if tmdb_ids:
+                catalog_gen.save_user_catalog(
+                    user_id=user.id,
+                    slot_id=slot,
+                    name="Trending Now",
+                    media_type=media_type,
+                    tmdb_ids=tmdb_ids,
+                    generation_method="tmdb_trending",
+                )
+                catalogs_created += 1
+                logger.info(f"  Trending ({media_label}): {len(tmdb_ids)} items")
+        except Exception as e:
+            logger.warning(f"  Trending ({media_label}) failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Step 6: "Top 10 Today" — TMDB trending day (first 10)
+    # ------------------------------------------------------------------
+    for media_label, media_type, slot in [
+        ("movies", "movie", "top10-movie"),
+        ("shows", "tv", "top10-series"),
+    ]:
+        try:
+            data = (
+                await tmdb_client.get_trending_movies()
+                if media_type == "movie"
+                else await tmdb_client.get_trending_tv_shows()
+            )
+            tmdb_ids = [r["id"] for r in data.get("results", [])[:10] if r.get("id")]
+            if tmdb_ids:
+                catalog_gen.save_user_catalog(
+                    user_id=user.id,
+                    slot_id=slot,
+                    name="Top 10 Today",
+                    media_type=media_type,
+                    tmdb_ids=tmdb_ids,
+                    generation_method="tmdb_top10_daily",
+                )
+                catalogs_created += 1
+                logger.info(f"  Top 10 ({media_label}): {len(tmdb_ids)} items")
+        except Exception as e:
+            logger.warning(f"  Top 10 ({media_label}) failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Step 7: "Popular" — TMDB popular endpoint
+    # ------------------------------------------------------------------
+    for media_label, media_type, slot in [
+        ("movies", "movie", "popular-movie"),
+        ("shows", "tv", "popular-series"),
+    ]:
+        try:
+            data = (
+                await tmdb_client.get_popular_movies()
+                if media_type == "movie"
+                else await tmdb_client.get_popular_tv_shows()
+            )
+            tmdb_ids = [r["id"] for r in data.get("results", []) if r.get("id")]
+            if tmdb_ids:
+                catalog_gen.save_user_catalog(
+                    user_id=user.id,
+                    slot_id=slot,
+                    name="Popular",
+                    media_type=media_type,
+                    tmdb_ids=tmdb_ids,
+                    generation_method="tmdb_popular",
+                )
+                catalogs_created += 1
+                logger.info(f"  Popular ({media_label}): {len(tmdb_ids)} items")
+        except Exception as e:
+            logger.warning(f"  Popular ({media_label}) failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Backfill metadata for TMDB IDs not yet in MediaMetadata
+    # ------------------------------------------------------------------
+    from app.models import UserCatalog, UserCatalogContent
+
+    user_catalog_ids = [
+        c.id
+        for c in db.query(UserCatalog.id).filter(UserCatalog.user_id == user.id).all()
+    ]
+    if user_catalog_ids:
+        rows = (
+            db.query(UserCatalogContent.tmdb_id, UserCatalogContent.media_type)
+            .filter(UserCatalogContent.catalog_id.in_(user_catalog_ids))
+            .distinct()
+            .all()
+        )
+        ids_by_type: Dict[str, Set[int]] = {"movie": set(), "tv": set()}
+        for r in rows:
+            ids_by_type.setdefault(r.media_type, set()).add(r.tmdb_id)
+        try:
+            await _backfill_metadata(db, ids_by_type)
+        except Exception as e:
+            logger.warning(f"Metadata backfill had errors: {e}")
+
+    # ------------------------------------------------------------------
+    # Done
+    # ------------------------------------------------------------------
+    user.last_sync = datetime.utcnow()
+    db.commit()
+
+    logger.info(
+        f"Local sync complete for {display}: " f"{catalogs_created} catalogs generated"
+    )
+    return catalogs_created
+
+
+# ---------------------------------------------------------------------------
 # Bulk sync for all users (called by scheduler)
 # ---------------------------------------------------------------------------
 async def sync_all_users(db: Session) -> Dict:
@@ -617,16 +947,21 @@ async def sync_all_users(db: Session) -> Dict:
 
     for user in users:
         try:
-            access_token = await ensure_valid_trakt_token(user, db)
-            count = await sync_user_catalogs(user, db, access_token)
+            auth_source = getattr(user, "auth_source", "trakt")
+            if auth_source == "local":
+                count = await sync_local_user_catalogs(user, db)
+            else:
+                access_token = await ensure_valid_trakt_token(user, db)
+                count = await sync_user_catalogs(user, db, access_token)
             stats["synced"] += 1
             stats["catalogs"] += count
         except Exception as e:
-            logger.error(f"Sync failed for user {user.trakt_username}: {e}")
+            display = user.trakt_username or user.display_name or user.user_key[:8]
+            logger.error(f"Sync failed for user {display}: {e}")
             stats["failed"] += 1
             db.rollback()
 
-        # Brief pause between users to avoid hammering Trakt API
+        # Brief pause between users to avoid hammering APIs
         await asyncio.sleep(1)
 
     logger.info(

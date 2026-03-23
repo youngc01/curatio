@@ -17,6 +17,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Index,
     Text,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -158,7 +159,7 @@ class UniversalCatalogContent(Base):
 
 
 class User(Base):
-    """Users who have authenticated with Trakt."""
+    """Users who have authenticated with Trakt or registered locally."""
 
     __tablename__ = "users"
 
@@ -166,11 +167,25 @@ class User(Base):
     user_key = Column(String(100), unique=True, nullable=False, index=True)
     # user_key is a URL-safe token that goes in the Stremio manifest URL
 
-    trakt_user_id = Column(String(100), unique=True, nullable=False, index=True)
+    auth_source = Column(String(20), nullable=False, default="trakt")
+    # 'trakt' or 'local'
+
+    display_name = Column(String(200), nullable=True)
+
+    # Account fields (for local auth with email/password/2FA)
+    email = Column(String(254), unique=True, nullable=True, index=True)
+    password_hash = Column(String(128), nullable=True)
+    totp_secret = Column(Text, nullable=True)  # Fernet-encrypted
+    totp_enabled = Column(Boolean, default=False, nullable=False)
+    bandwidth_tier = Column(
+        String(10), default="high", nullable=False
+    )  # 'low' or 'high'
+
+    trakt_user_id = Column(String(100), nullable=True, index=True)
     trakt_username = Column(String(100), nullable=True)
-    trakt_access_token = Column(Text, nullable=False)  # encrypted at rest
-    trakt_refresh_token = Column(Text, nullable=False)  # encrypted at rest
-    trakt_token_expires_at = Column(DateTime, nullable=False)
+    trakt_access_token = Column(Text, nullable=True)  # encrypted at rest
+    trakt_refresh_token = Column(Text, nullable=True)  # encrypted at rest
+    trakt_token_expires_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     last_login = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -182,8 +197,19 @@ class User(Base):
     personal_catalogs = relationship(
         "UserCatalog", back_populates="user", cascade="all, delete-orphan"
     )
+    watch_events = relationship(
+        "WatchEvent", back_populates="user", cascade="all, delete-orphan"
+    )
 
-    __table_args__ = (Index("idx_active_sync", "is_active", "last_sync"),)
+    __table_args__ = (
+        Index("idx_active_sync", "is_active", "last_sync"),
+        Index(
+            "idx_trakt_user_id_unique",
+            "trakt_user_id",
+            unique=True,
+            postgresql_where=text("trakt_user_id IS NOT NULL"),
+        ),
+    )
 
     def __repr__(self):
         return f"<User(id={self.id}, trakt_username='{self.trakt_username}')>"
@@ -366,3 +392,63 @@ class TaggingJob(Base):
 
     def __repr__(self):
         return f"<TaggingJob(id={self.id}, job_type='{self.job_type}', status='{self.status}')>"
+
+
+class WatchEvent(Base):
+    """Scrobble events from the custom Stremio client."""
+
+    __tablename__ = "watch_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    tmdb_id = Column(Integer, nullable=False)
+    media_type = Column(String(10), nullable=False)  # 'movie' or 'tv'
+
+    # Episode tracking for TV
+    season = Column(Integer, nullable=True)
+    episode = Column(Integer, nullable=True)
+
+    # Only 'complete' events count for recommendations
+    action = Column(String(20), nullable=False)  # 'complete'
+
+    title = Column(String(500), nullable=True)  # denormalized for display
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    user = relationship("User", back_populates="watch_events")
+
+    __table_args__ = (
+        Index("idx_watch_user_created", "user_id", "created_at"),
+        Index("idx_watch_user_tmdb", "user_id", "tmdb_id", "media_type"),
+    )
+
+
+class UserSession(Base):
+    """Web login sessions for users with email/password accounts."""
+
+    __tablename__ = "user_sessions"
+
+    token = Column(String(64), primary_key=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+
+
+class AppPairingSession(Base):
+    """One-time pairing sessions for signing into the app via QR code or short code."""
+
+    __tablename__ = "app_pairing_sessions"
+
+    token = Column(String(64), primary_key=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    short_code = Column(String(8), unique=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)  # 5-minute expiry
+    claimed = Column(Boolean, default=False, nullable=False)
