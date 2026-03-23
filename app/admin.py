@@ -1089,6 +1089,11 @@ async def list_users(request: Request, _=Depends(verify_admin)):
                     "trakt_user_id": u.trakt_user_id,
                     "user_key": u.user_key[:8] + "...",
                     "is_active": u.is_active,
+                    "auth_source": getattr(u, "auth_source", "trakt"),
+                    "email": getattr(u, "email", None),
+                    "display_name": getattr(u, "display_name", None),
+                    "totp_enabled": getattr(u, "totp_enabled", False),
+                    "bandwidth_tier": getattr(u, "bandwidth_tier", "high"),
                     "created_at": u.created_at.isoformat() if u.created_at else None,
                     "last_login": u.last_login.isoformat() if u.last_login else None,
                     "last_sync": u.last_sync.isoformat() if u.last_sync else None,
@@ -1121,6 +1126,70 @@ async def delete_user(user_id: int, request: Request, _=Depends(verify_admin)):
             raise HTTPException(404, "User not found")
         db.delete(user)
         db.commit()
+    return {"status": "ok"}
+
+
+@router.post("/api/users/{user_id}/bandwidth")
+async def set_user_bandwidth(user_id: int, request: Request, _=Depends(verify_admin)):
+    """Set a user's bandwidth tier (low or high)."""
+    body = await request.json()
+    tier = body.get("tier", "high")
+    if tier not in ("low", "high"):
+        raise HTTPException(400, "tier must be 'low' or 'high'")
+
+    with get_db() as db:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+        user.bandwidth_tier = tier
+        db.commit()
+    return {"status": "ok", "bandwidth_tier": tier}
+
+
+@router.get("/api/aiostreams-config")
+async def get_aiostreams_config(request: Request, _=Depends(verify_admin)):
+    """Get current AIOStreams URLs."""
+    with get_db() as db:
+        low = (
+            db.query(AdminSetting)
+            .filter(AdminSetting.key == "aiostreams_low_bw_url")
+            .first()
+        )
+        high = (
+            db.query(AdminSetting)
+            .filter(AdminSetting.key == "aiostreams_high_bw_url")
+            .first()
+        )
+    return {
+        "low_bw_url": low.value if low else "",
+        "high_bw_url": high.value if high else "",
+    }
+
+
+@router.post("/api/aiostreams-config")
+async def set_aiostreams_config(request: Request, _=Depends(verify_admin)):
+    """Save AIOStreams URLs (low and high bandwidth)."""
+    body = await request.json()
+    low_url = body.get("low_bw_url", "").strip()
+    high_url = body.get("high_bw_url", "").strip()
+
+    with get_db() as db:
+        for key, value in [
+            ("aiostreams_low_bw_url", low_url),
+            ("aiostreams_high_bw_url", high_url),
+        ]:
+            row = db.query(AdminSetting).filter(AdminSetting.key == key).first()
+            if row:
+                row.value = value
+            else:
+                db.add(AdminSetting(key=key, value=value))
+        db.commit()
+
+    # Clear stream proxy URL cache
+    from app.stream_proxy import _aiostreams_url_cache
+
+    _aiostreams_url_cache.clear()
+
     return {"status": "ok"}
 
 

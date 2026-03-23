@@ -241,3 +241,32 @@ def _add_missing_columns():
             db.commit()
         except Exception:
             db.rollback()
+
+        # --- v2: Account system columns ---
+        v2_user_migrations = [
+            ("users", "email", "VARCHAR(254)"),
+            ("users", "password_hash", "VARCHAR(128)"),
+            ("users", "totp_secret", "TEXT"),
+            ("users", "totp_enabled", "BOOLEAN DEFAULT FALSE NOT NULL"),
+            ("users", "bandwidth_tier", "VARCHAR(10) DEFAULT 'high' NOT NULL"),
+        ]
+        for table, column, col_type in v2_user_migrations:
+            try:
+                db.execute(text(f"SELECT {column} FROM {table} LIMIT 1"))
+            except Exception:
+                db.rollback()
+                logger.info(f"Adding missing column {table}.{column}")
+                db.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+                db.commit()
+
+        # Unique index on email (only non-NULL, for backward compat with Trakt users)
+        try:
+            db.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique "
+                    "ON users (email) WHERE email IS NOT NULL"
+                )
+            )
+            db.commit()
+        except Exception:
+            db.rollback()

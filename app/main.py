@@ -11,8 +11,11 @@ from time import time
 from urllib.parse import quote_plus
 
 import httpx
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
@@ -46,6 +49,23 @@ from typing import Optional, Literal
 
 from app.landing import landing_page_html, auth_success_html, auth_error_html
 from app.admin import router as admin_router, load_settings_from_db
+from app.account import router as account_router
+from app.auth import (
+    hash_password,
+    verify_password,
+    generate_totp_secret,
+    get_totp_provisioning_uri,
+    verify_totp,
+    generate_totp_qr_data_url,
+    encrypt_totp_secret,
+    decrypt_totp_secret,
+    create_user_session,
+    verify_user_session,
+    create_pairing_session,
+    claim_pairing_session,
+)
+from app.stream_proxy import get_streams
+from app.models import UserSession
 
 # ---- Manifest cache (avoids DB query on every manifest request) ----
 _manifest_cache: dict[str, tuple[float, dict]] = {}
@@ -183,12 +203,26 @@ def _schedule_local_sync(user_id: int):
         logger.warning("No event loop — skipping background local sync")
 
 
+# Rate limiter
+limiter = Limiter(key_func=get_remote_address)
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Curatio",
     description="AI-curated cinema for Stremio",
     version="1.0.0",
 )
+
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Too many requests. Please try again later."},
+    )
+
 
 # GZip middleware — compress responses >=500 bytes (big win on mobile)
 app.add_middleware(GZipMiddleware, minimum_size=500)
@@ -204,6 +238,9 @@ app.add_middleware(
 
 # Mount admin portal
 app.include_router(admin_router)
+
+# Mount account pages
+app.include_router(account_router)
 
 
 @app.on_event("startup")
@@ -349,7 +386,7 @@ async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
             "version": "1.0.0",
             "name": settings.addon_name,
             "description": "AI-powered Netflix-style content discovery",
-            "resources": ["catalog", "meta"],
+            "resources": ["catalog", "meta", "stream"],
             "types": ["movie", "series"],
             "catalogs": catalogs,
             "idPrefixes": ["tmdb"],
@@ -416,7 +453,7 @@ async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
         "version": "1.0.0",
         "name": f"{settings.addon_name} - {user.trakt_username or user.display_name or 'Personal'}",
         "description": "AI-powered Netflix-style content discovery personalized for you",
-        "resources": ["catalog", "meta"],
+        "resources": ["catalog", "meta", "stream"],
         "types": ["movie", "series"],
         "catalogs": catalogs,
         "idPrefixes": ["tmdb"],
@@ -1075,50 +1112,249 @@ async def similar_catalog(user_key: str, catalog_type: str, meta_id: str):
 # ---------------------------------------------------------------------------
 
 
-@app.post("/auth/register")
-async def register_local_user(
-    invite: str = "",
-    name: str = "",
-):
-    """Register a local (scrobble-only) user without Trakt.
+class RegisterRequest(BaseModel):
+    """Account registration request."""
 
-    Validates invite code or master password, creates a user with a unique
-    user_key, and returns the manifest URL.
+    invite: str
+    email: str
+    password: str
+    name: str = ""
+
+
+class LoginRequest(BaseModel):
+    """Login request."""
+
+    email: str
+    password: str
+    totp_code: str = ""
+
+
+class TOTPConfirmRequest(BaseModel):
+    """2FA confirmation request."""
+
+    code: str
+
+
+def _get_user_from_session(request: Request, db: Session) -> User:
+    """Extract and verify user from session cookie."""
+    token = request.cookies.get("user_session")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user = verify_user_session(token, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Session expired")
+    return user
+
+
+@app.post("/auth/register")
+@limiter.limit("5/minute")
+async def register_account(request: Request, payload: RegisterRequest):
+    """Register a new account with email, password, and invite code.
+
+    Creates the user but does not return user_key — user must set up 2FA
+    and pair the app separately.
     """
-    if not invite:
+    if not payload.invite:
         raise HTTPException(status_code=403, detail="Invite code required")
+    if not payload.email or "@" not in payload.email:
+        raise HTTPException(status_code=400, detail="Valid email required")
+    if len(payload.password) < 8:
+        raise HTTPException(
+            status_code=400, detail="Password must be at least 8 characters"
+        )
 
     with get_db() as db_session:
-        # Check invite code first
+        # Check email uniqueness
+        existing = (
+            db_session.query(User)
+            .filter(User.email == payload.email.lower().strip())
+            .first()
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail="Email already registered")
+
+        # Validate invite code
         invite_row = (
             db_session.query(InviteCode)
-            .filter(InviteCode.code == invite, InviteCode.is_used.is_(False))
+            .filter(InviteCode.code == payload.invite, InviteCode.is_used.is_(False))
             .first()
         )
         if invite_row:
             if invite_row.expires_at and datetime.utcnow() > invite_row.expires_at:
                 raise HTTPException(status_code=403, detail="Invite code has expired")
-            # Mark invite as used
             invite_row.is_used = True
             invite_row.used_at = datetime.utcnow()
-            invite_row.used_by = name or "local-user"
-        elif invite != settings.master_password:
+            invite_row.used_by = payload.email.lower().strip()
+        elif payload.invite != settings.master_password:
             raise HTTPException(status_code=403, detail="Invalid invite code")
 
         user_key = secrets.token_urlsafe(32)
         user = User(
             user_key=user_key,
             auth_source="local",
-            display_name=name or None,
+            email=payload.email.lower().strip(),
+            password_hash=hash_password(payload.password),
+            display_name=payload.name or None,
         )
         db_session.add(user)
         db_session.commit()
 
-    manifest_url = f"{settings.base_url}/{user_key}/manifest.json"
+    return {"status": "ok", "message": "Account created. Please log in to set up 2FA."}
+
+
+@app.post("/auth/login")
+@limiter.limit("10/minute")
+async def login(
+    request: Request, payload: LoginRequest, db: Session = Depends(get_db_dependency)
+):
+    """Log in with email + password + optional TOTP code.
+
+    Returns a session cookie for web access.
+    """
+    user = db.query(User).filter(User.email == payload.email.lower().strip()).first()
+    if not user or not user.password_hash:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is deactivated")
+    if not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # Check 2FA if enabled
+    if user.totp_enabled:
+        if not payload.totp_code:
+            raise HTTPException(status_code=401, detail="2FA code required")
+        secret = decrypt_totp_secret(user.totp_secret)
+        if not verify_totp(secret, payload.totp_code):
+            raise HTTPException(status_code=401, detail="Invalid 2FA code")
+
+    user.last_login = datetime.utcnow()  # type: ignore[assignment]
+    token = create_user_session(user.id, db)
+
+    response = JSONResponse(
+        content={
+            "status": "ok",
+            "totp_enabled": user.totp_enabled,
+            "display_name": user.display_name or user.email,
+        }
+    )
+    response.set_cookie(
+        key="user_session",
+        value=token,
+        httponly=True,
+        max_age=86400,
+        samesite="lax",
+    )
+    return response
+
+
+@app.post("/auth/setup-2fa")
+async def setup_2fa(
+    request: Request,
+    db: Session = Depends(get_db_dependency),
+):
+    """Generate a TOTP secret and QR code for authenticator app enrollment.
+
+    Requires an active user session.
+    """
+    user = _get_user_from_session(request, db)
+
+    if user.totp_enabled:
+        raise HTTPException(status_code=400, detail="2FA is already enabled")
+
+    secret = generate_totp_secret()
+    provisioning_uri = get_totp_provisioning_uri(secret, user.email or "user")
+    qr_data_url = generate_totp_qr_data_url(provisioning_uri)
+
+    # Store encrypted secret (not yet enabled until confirmed)
+    user.totp_secret = encrypt_totp_secret(secret)
+    db.commit()
+
     return {
-        "user_key": user_key,
-        "manifest_url": manifest_url,
+        "secret": secret,
+        "provisioning_uri": provisioning_uri,
+        "qr_data_url": qr_data_url,
     }
+
+
+@app.post("/auth/confirm-2fa")
+@limiter.limit("10/minute")
+async def confirm_2fa(
+    payload: TOTPConfirmRequest,
+    request: Request,
+    db: Session = Depends(get_db_dependency),
+):
+    """Verify a TOTP code to confirm 2FA enrollment.
+
+    Requires an active user session with a pending TOTP secret.
+    """
+    user = _get_user_from_session(request, db)
+
+    if user.totp_enabled:
+        raise HTTPException(status_code=400, detail="2FA is already enabled")
+    if not user.totp_secret:
+        raise HTTPException(status_code=400, detail="Call /auth/setup-2fa first")
+
+    secret = decrypt_totp_secret(user.totp_secret)
+    if not verify_totp(secret, payload.code):
+        raise HTTPException(status_code=401, detail="Invalid 2FA code")
+
+    user.totp_enabled = True
+    db.commit()
+
+    return {"status": "ok", "message": "2FA enabled successfully"}
+
+
+@app.post("/auth/pair/create")
+async def create_pair(
+    request: Request,
+    db: Session = Depends(get_db_dependency),
+):
+    """Create a pairing session for signing into the app.
+
+    Returns a QR code and short code. The app scans the QR or user types
+    the short code to receive their user_key.
+    """
+    user = _get_user_from_session(request, db)
+    result = create_pairing_session(user.id, db)
+    return result
+
+
+@app.get("/auth/pair/{token}/status")
+async def pair_status(token: str, db: Session = Depends(get_db_dependency)):
+    """Poll this endpoint from the app to check if a pairing session is ready.
+
+    Returns user_key and manifest_url when the session is valid and unclaimed.
+    """
+    result = claim_pairing_session(db, token=token)
+    if not result:
+        return {"status": "pending"}
+    return {"status": "ready", **result}
+
+
+@app.get("/auth/pair/code/{short_code}")
+async def pair_by_code(short_code: str, db: Session = Depends(get_db_dependency)):
+    """Alternative to QR scanning — user types the 6-character code in the app."""
+    result = claim_pairing_session(db, short_code=short_code)
+    if not result:
+        raise HTTPException(status_code=404, detail="Invalid or expired code")
+    return {"status": "ready", **result}
+
+
+@app.post("/auth/logout")
+async def user_logout(
+    request: Request,
+    db: Session = Depends(get_db_dependency),
+):
+    """Log out by clearing the user session."""
+    token = request.cookies.get("user_session")
+    if token:
+        session = db.query(UserSession).filter(UserSession.token == token).first()
+        if session:
+            db.delete(session)
+            db.commit()
+    response = JSONResponse(content={"status": "ok"})
+    response.delete_cookie("user_session")
+    return response
 
 
 @app.post("/{user_key}/scrobble")
@@ -1395,6 +1631,33 @@ async def trakt_callback(
             ),
             status_code=500,
         )
+
+
+# ---------------------------------------------------------------------------
+# Stream proxy endpoint (AIOStreams)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/{user_key}/stream/{stremio_type}/{video_id}.json")
+async def stream_handler(
+    user_key: str,
+    stremio_type: str,
+    video_id: str,
+    db: Session = Depends(get_db_dependency),
+):
+    """Proxy stream requests to AIOStreams based on user's bandwidth tier."""
+    user = _get_cached_user(user_key, db)
+    if not user:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="User is inactive")
+
+    tier = getattr(user, "bandwidth_tier", "high") or "high"
+    streams = await get_streams(video_id, stremio_type, tier, db)
+    return JSONResponse(
+        content={"streams": streams},
+        headers={"Cache-Control": "public, max-age=300"},
+    )
 
 
 if __name__ == "__main__":

@@ -172,6 +172,15 @@ class User(Base):
 
     display_name = Column(String(200), nullable=True)
 
+    # Account fields (for local auth with email/password/2FA)
+    email = Column(String(254), unique=True, nullable=True, index=True)
+    password_hash = Column(String(128), nullable=True)
+    totp_secret = Column(Text, nullable=True)  # Fernet-encrypted
+    totp_enabled = Column(Boolean, default=False, nullable=False)
+    bandwidth_tier = Column(
+        String(10), default="high", nullable=False
+    )  # 'low' or 'high'
+
     trakt_user_id = Column(String(100), nullable=True, index=True)
     trakt_username = Column(String(100), nullable=True)
     trakt_access_token = Column(Text, nullable=True)  # encrypted at rest
@@ -415,3 +424,31 @@ class WatchEvent(Base):
         Index("idx_watch_user_created", "user_id", "created_at"),
         Index("idx_watch_user_tmdb", "user_id", "tmdb_id", "media_type"),
     )
+
+
+class UserSession(Base):
+    """Web login sessions for users with email/password accounts."""
+
+    __tablename__ = "user_sessions"
+
+    token = Column(String(64), primary_key=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+
+
+class AppPairingSession(Base):
+    """One-time pairing sessions for signing into the app via QR code or short code."""
+
+    __tablename__ = "app_pairing_sessions"
+
+    token = Column(String(64), primary_key=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    short_code = Column(String(8), unique=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)  # 5-minute expiry
+    claimed = Column(Boolean, default=False, nullable=False)
