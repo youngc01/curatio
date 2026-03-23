@@ -32,7 +32,6 @@ from app.models import (
     UserCatalog,
     UserSession,
     TaggingJob,
-    WatchEvent,
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
