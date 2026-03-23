@@ -1236,7 +1236,10 @@ async def list_sessions(request: Request, _=Depends(verify_admin)):
                 "token": s.token[:8] + "...",
                 "token_full": s.token,
                 "user_id": s.user_id,
-                "username": u.trakt_username or u.display_name or u.email or f"User #{u.id}",
+                "username": u.trakt_username
+                or u.display_name
+                or u.email
+                or f"User #{u.id}",
                 "created_at": s.created_at.isoformat() if s.created_at else None,
                 "expires_at": s.expires_at.isoformat() if s.expires_at else None,
                 "type": "web",
@@ -1260,7 +1263,10 @@ async def list_sessions(request: Request, _=Depends(verify_admin)):
                 "token": s.token[:8] + "...",
                 "token_full": s.token,
                 "user_id": s.user_id,
-                "username": u.trakt_username or u.display_name or u.email or f"User #{u.id}",
+                "username": u.trakt_username
+                or u.display_name
+                or u.email
+                or f"User #{u.id}",
                 "short_code": s.short_code,
                 "created_at": s.created_at.isoformat() if s.created_at else None,
                 "expires_at": s.expires_at.isoformat() if s.expires_at else None,
