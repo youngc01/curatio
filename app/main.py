@@ -381,6 +381,24 @@ async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
                 }
             )
 
+        # Search catalogs at the end
+        catalogs.append(
+            {
+                "id": "search",
+                "name": settings.addon_name,
+                "type": "movie",
+                "extra": [{"name": "search", "isRequired": True}],
+            }
+        )
+        catalogs.append(
+            {
+                "id": "search",
+                "name": settings.addon_name,
+                "type": "series",
+                "extra": [{"name": "search", "isRequired": True}],
+            }
+        )
+
         manifest_data = {
             "id": "ai.recommendations.universal",
             "version": "1.0.0",
@@ -447,6 +465,24 @@ async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
                 "extra": [{"name": "skip", "isRequired": False}],
             }
         )
+
+    # Search catalogs at the end
+    catalogs.append(
+        {
+            "id": "search",
+            "name": settings.addon_name,
+            "type": "movie",
+            "extra": [{"name": "search", "isRequired": True}],
+        }
+    )
+    catalogs.append(
+        {
+            "id": "search",
+            "name": settings.addon_name,
+            "type": "series",
+            "extra": [{"name": "search", "isRequired": True}],
+        }
+    )
 
     manifest_data = {
         "id": f"ai.recommendations.{user_key}",
@@ -737,6 +773,50 @@ def _shuffle_items(items: list, catalog_id: str) -> list:
     return shuffled
 
 
+def _search_media(db: Session, catalog_type: str, query: str) -> list:
+    """Search MediaMetadata by title, returning results sorted by popularity."""
+    from urllib.parse import unquote
+
+    query = unquote(query).strip()
+    if not query:
+        return []
+
+    media_type = "tv" if catalog_type == "series" else catalog_type
+    search_pattern = f"%{query}%"
+
+    results = (
+        db.query(MediaMetadata)
+        .filter(
+            MediaMetadata.media_type == media_type,
+            MediaMetadata.title.ilike(search_pattern),
+        )
+        .order_by(MediaMetadata.popularity.desc().nullslast())
+        .limit(50)
+        .all()
+    )
+
+    items = []
+    for r in results:
+        year = ""
+        if r.release_date and len(r.release_date) >= 4:
+            year = r.release_date[:4]
+        items.append(
+            {
+                "tmdb_id": r.tmdb_id,
+                "title": r.title,
+                "poster": r.poster_path,
+                "backdrop": r.backdrop_path,
+                "year": year,
+                "description": r.overview,
+                "rating": r.vote_average,
+                "genres": r.genres if isinstance(r.genres, list) else [],
+                "imdb_id": r.imdb_id,
+                "logo": r.logo_path,
+            }
+        )
+    return items
+
+
 def _get_cached_user(user_key: str, db: Session) -> "User | None":
     """Look up user by key with in-memory caching."""
     now = time()
@@ -869,7 +949,8 @@ def catalog_with_extra(
     skip = int(params.get("skip", 0))
     if skip < 0:
         skip = 0
-    return catalog(user_key, catalog_type, catalog_id, skip, db)
+    search = params.get("search")
+    return catalog(user_key, catalog_type, catalog_id, skip, db, search=search)
 
 
 @app.get("/{user_key}/catalog/{catalog_type}/{catalog_id}.json")
@@ -879,6 +960,7 @@ def catalog(
     catalog_id: str,
     skip: int = Query(0, ge=0),
     db: Session = Depends(get_db_dependency),
+    search: str | None = None,
 ):
     """
     Catalog endpoint for both universal (install-token) and personalized (user-key) access.
@@ -890,6 +972,20 @@ def catalog(
     Matches the base URL derived from /{user_key}/manifest.json
     """
     install_token = get_install_token()
+
+    # Validate user_key
+    if user_key != install_token:
+        user = _get_cached_user(user_key, db)
+        if not user:
+            raise HTTPException(status_code=404, detail="Not found")
+
+    # Search catalog
+    if catalog_id == "search" and search:
+        items = _search_media(db, catalog_type, search)
+        metas = _build_stremio_metas(items, catalog_type)
+        response = JSONResponse(content={"metas": metas})
+        response.headers["Cache-Control"] = "public, max-age=3600"
+        return response
 
     if user_key == install_token:
         # Universal catalog — use global filter defaults
