@@ -316,7 +316,7 @@ def test_root_endpoint(client):
     """Test root endpoint returns landing page HTML."""
     response = client.get("/")
     assert response.status_code == 200
-    assert "AI" in response.text
+    assert "Curatio" in response.text
 
 
 def test_health_check(client):
