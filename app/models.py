@@ -200,6 +200,9 @@ class User(Base):
     watch_events = relationship(
         "WatchEvent", back_populates="user", cascade="all, delete-orphan"
     )
+    watch_progress = relationship(
+        "WatchProgress", back_populates="user", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("idx_active_sync", "is_active", "last_sync"),
@@ -423,6 +426,49 @@ class WatchEvent(Base):
     __table_args__ = (
         Index("idx_watch_user_created", "user_id", "created_at"),
         Index("idx_watch_user_tmdb", "user_id", "tmdb_id", "media_type"),
+    )
+
+
+class WatchProgress(Base):
+    """Playback progress for cross-device Continue Watching.
+
+    Upserted on every progress report from the client. One row per
+    (user, tmdb_id, media_type, season, episode) — the most recent
+    position always wins.
+    """
+
+    __tablename__ = "watch_progress"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    tmdb_id = Column(Integer, nullable=False)
+    media_type = Column(String(10), nullable=False)  # 'movie' or 'tv'
+
+    season = Column(Integer, nullable=True)
+    episode = Column(Integer, nullable=True)
+
+    position = Column(Integer, nullable=False)  # seconds into playback
+    duration = Column(Integer, nullable=False)  # total runtime in seconds
+
+    title = Column(String(500), nullable=True)
+
+    updated_at = Column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    user = relationship("User", back_populates="watch_progress")
+
+    __table_args__ = (
+        Index(
+            "idx_progress_user_item",
+            "user_id",
+            "tmdb_id",
+            "media_type",
+            unique=False,
+        ),
+        Index("idx_progress_user_updated", "user_id", "updated_at"),
     )
 
 
