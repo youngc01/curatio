@@ -1933,9 +1933,7 @@ async def stream_handler(
     if video_id.startswith("tt"):
         imdb_base = video_id.split(":")[0]
         meta = (
-            db.query(MediaMetadata)
-            .filter(MediaMetadata.imdb_id == imdb_base)
-            .first()
+            db.query(MediaMetadata).filter(MediaMetadata.imdb_id == imdb_base).first()
         )
         if meta:
             title = meta.title
@@ -1953,7 +1951,9 @@ async def stream_handler(
         )
         if meta:
             title = meta.title
-    username = user.trakt_username or user.display_name or user.email or f"User #{user.id}"
+    username = (
+        user.trakt_username or user.display_name or user.email or f"User #{user.id}"
+    )
     record_stream_activity(username, user_key, video_id, stremio_type, tier, title)
 
     return JSONResponse(
