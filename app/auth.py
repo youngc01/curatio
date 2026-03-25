@@ -28,12 +28,15 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def hash_password(plain: str) -> str:
     """Hash a password using bcrypt."""
-    return pwd_context.hash(plain)
+    # bcrypt has a 72-byte limit on passwords
+    truncated = plain.encode("utf-8")[:72].decode("utf-8", errors="ignore")
+    return pwd_context.hash(truncated)
 
 
 def verify_password(plain: str, hashed: str) -> bool:
     """Verify a password against its bcrypt hash."""
-    return pwd_context.verify(plain, hashed)
+    truncated = plain.encode("utf-8")[:72].decode("utf-8", errors="ignore")
+    return pwd_context.verify(truncated, hashed)
 
 
 def generate_totp_secret() -> str:
