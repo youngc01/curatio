@@ -8,6 +8,7 @@ Protected by master password authentication.
 import asyncio
 import collections
 import secrets
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -1330,6 +1331,28 @@ async def revoke_pairing_session(token: str, request: Request, _=Depends(verify_
     return {"status": "ok"}
 
 
+@router.get("/api/active-streams")
+async def active_streams(request: Request, _=Depends(verify_admin)):
+    """Return currently active stream sessions (last 5 minutes)."""
+    from app.stream_proxy import get_active_streams
+
+    streams = get_active_streams()
+    return {
+        "streams": [
+            {
+                "user": s["user"],
+                "video_id": s["video_id"],
+                "type": s["type"],
+                "tier": s["tier"],
+                "title": s.get("title"),
+                "started_at": datetime.utcfromtimestamp(s["ts"]).isoformat(),
+                "ago_seconds": int(time.time() - s["ts"]),
+            }
+            for s in streams
+        ]
+    }
+
+
 # ---- HTML Page ----
 
 
@@ -1566,6 +1589,7 @@ tr:last-child td{border-bottom:none}
     <button class="tab-btn active" data-tab="overview">Overview</button>
     <button class="tab-btn" data-tab="invites">Invites</button>
     <button class="tab-btn" data-tab="users">Users</button>
+    <button class="tab-btn" data-tab="streams">Streams</button>
     <button class="tab-btn" data-tab="sessions">Sessions</button>
     <button class="tab-btn" data-tab="settings">Settings</button>
     <button class="tab-btn" data-tab="build">Build</button>
@@ -1659,6 +1683,25 @@ tr:last-child td{border-bottom:none}
           <tbody id="users-tbody"><tr><td colspan="10" style="color:#8b949e">Loading...</td></tr></tbody>
         </table>
         </div>
+      </div>
+    </div>
+
+    <!-- STREAMS TAB -->
+    <div class="tab-panel" id="tab-streams">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <div>
+            <h3>Active Streams</h3>
+            <p style="color:#8b949e;font-size:13px;margin-top:4px">
+              Stream requests in the last 5 minutes. Auto-refreshes every 10 seconds.
+            </p>
+          </div>
+          <button class="btn btn-sm" onclick="loadActiveStreams()">Refresh</button>
+        </div>
+        <table>
+          <thead><tr><th>User</th><th>Title</th><th>Type</th><th>Tier</th><th>Video ID</th><th>When</th></tr></thead>
+          <tbody id="active-streams-tbody"><tr><td colspan="6" style="color:#8b949e">Loading...</td></tr></tbody>
+        </table>
       </div>
     </div>
 
@@ -2032,7 +2075,7 @@ async function checkAuth() {
 
 // ---- Data Loading ----
 async function loadAll() {
-  await Promise.all([loadStats(), loadSettings(), loadBuildStatus(), loadInvites(), loadUsers(), loadSessions(), loadAIOStreams()]);
+  await Promise.all([loadStats(), loadSettings(), loadBuildStatus(), loadInvites(), loadUsers(), loadSessions(), loadActiveStreams(), loadAIOStreams()]);
   // If a build is running, start polling logs automatically
   try {
     const s = await api('GET', '/admin/api/build/status');
@@ -2628,6 +2671,51 @@ async function revokePairingSession(token, username) {
     toast('Failed: ' + e.message, 'error');
   }
 }
+
+// ---- Active Streams ----
+var _streamRefreshTimer = null;
+
+async function loadActiveStreams() {
+  try {
+    var data = await api('GET', '/admin/api/active-streams');
+    var tbody = document.getElementById('active-streams-tbody');
+    if (data.streams.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" style="color:#8b949e">No active streams right now.</td></tr>';
+    } else {
+      tbody.innerHTML = data.streams.map(function(s) {
+        var ago = s.ago_seconds;
+        var when = ago < 60 ? ago + 's ago' : Math.floor(ago / 60) + 'm ' + (ago % 60) + 's ago';
+        var title = s.title || s.video_id;
+        var typeBadge = s.type === 'movie'
+          ? '<span style="background:#1a3a5c;color:#58a6ff;padding:2px 8px;border-radius:4px;font-size:11px">movie</span>'
+          : '<span style="background:#3a1a5c;color:#a855f7;padding:2px 8px;border-radius:4px;font-size:11px">series</span>';
+        var tierBadge = s.tier === 'high'
+          ? '<span style="background:#1a3c1a;color:#4caf50;padding:2px 8px;border-radius:4px;font-size:11px">high</span>'
+          : '<span style="background:#3c3a1a;color:#ffc107;padding:2px 8px;border-radius:4px;font-size:11px">low</span>';
+        return '<tr>' +
+          '<td><strong>' + s.user + '</strong></td>' +
+          '<td>' + title + '</td>' +
+          '<td>' + typeBadge + '</td>' +
+          '<td>' + tierBadge + '</td>' +
+          '<td style="font-family:monospace;font-size:12px">' + s.video_id + '</td>' +
+          '<td>' + when + '</td>' +
+          '</tr>';
+      }).join('');
+    }
+  } catch(e) { if (e.message !== 'auth') console.error(e); }
+}
+
+// Auto-refresh streams tab when visible
+document.querySelectorAll('.tab-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    if (btn.dataset.tab === 'streams') {
+      loadActiveStreams();
+      if (!_streamRefreshTimer) _streamRefreshTimer = setInterval(loadActiveStreams, 10000);
+    } else {
+      if (_streamRefreshTimer) { clearInterval(_streamRefreshTimer); _streamRefreshTimer = null; }
+    }
+  });
+});
 
 // ---- AIOStreams ----
 async function loadAIOStreams() {

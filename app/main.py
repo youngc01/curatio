@@ -67,7 +67,7 @@ from app.auth import (
     claim_device_pairing_session,
     poll_device_pairing_session,
 )
-from app.stream_proxy import get_streams
+from app.stream_proxy import get_streams, record_stream_activity
 from app.models import UserSession
 
 # ---- Manifest cache (avoids DB query on every manifest request) ----
@@ -1816,6 +1816,35 @@ async def stream_handler(
 
     tier = getattr(user, "bandwidth_tier", "high") or "high"
     streams = await get_streams(video_id, stremio_type, tier, db)
+
+    # Record stream activity for the admin dashboard
+    title = None
+    if video_id.startswith("tt"):
+        imdb_base = video_id.split(":")[0]
+        meta = (
+            db.query(MediaMetadata)
+            .filter(MediaMetadata.imdb_id == imdb_base)
+            .first()
+        )
+        if meta:
+            title = meta.title
+    elif video_id.startswith("tmdb:"):
+        parts = video_id.split(":")
+        tmdb_id = int(parts[1])
+        mt = "tv" if len(parts) > 2 else "movie"
+        meta = (
+            db.query(MediaMetadata)
+            .filter(
+                MediaMetadata.tmdb_id == tmdb_id,
+                MediaMetadata.media_type == mt,
+            )
+            .first()
+        )
+        if meta:
+            title = meta.title
+    username = user.trakt_username or user.display_name or user.email or f"User #{user.id}"
+    record_stream_activity(username, user_key, video_id, stremio_type, tier, title)
+
     return JSONResponse(
         content={"streams": streams},
         headers={"Cache-Control": "public, max-age=300"},

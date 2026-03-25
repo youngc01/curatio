@@ -6,6 +6,7 @@ resolving TMDB IDs to IMDb IDs as needed.
 """
 
 import time
+from collections import deque
 from typing import Optional
 
 import httpx
@@ -23,6 +24,44 @@ _STREAM_CACHE_MAX = 500
 # In-memory cache for AIOStreams URLs
 _aiostreams_url_cache: dict[str, tuple[float, str]] = {}
 _URL_CACHE_TTL = 60  # 1 minute
+
+# ---------------------------------------------------------------------------
+# Active stream tracking — recent stream requests kept in a bounded deque
+# ---------------------------------------------------------------------------
+_ACTIVE_STREAM_TTL = 300  # consider a stream "active" for 5 minutes
+_ACTIVE_STREAM_MAX = 200
+
+# Each entry: {"user": str, "user_key": str, "video_id": str,
+#              "type": str, "tier": str, "title": str | None, "ts": float}
+_active_streams: deque[dict] = deque(maxlen=_ACTIVE_STREAM_MAX)
+
+
+def record_stream_activity(
+    username: str,
+    user_key: str,
+    video_id: str,
+    stremio_type: str,
+    tier: str,
+    title: Optional[str] = None,
+) -> None:
+    """Record a stream request for the active-streams dashboard."""
+    _active_streams.append(
+        {
+            "user": username,
+            "user_key": user_key,
+            "video_id": video_id,
+            "type": stremio_type,
+            "tier": tier,
+            "title": title,
+            "ts": time.time(),
+        }
+    )
+
+
+def get_active_streams() -> list[dict]:
+    """Return stream requests from the last 5 minutes, newest first."""
+    cutoff = time.time() - _ACTIVE_STREAM_TTL
+    return [s for s in reversed(_active_streams) if s["ts"] >= cutoff]
 
 
 def _get_aiostreams_url(tier: str, db: Session) -> Optional[str]:
