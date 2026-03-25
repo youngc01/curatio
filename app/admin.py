@@ -22,6 +22,7 @@ from app.models import (
     AdminSetting,
     AdminSession,
     AppPairingSession,
+    DevicePairingSession,
     InviteCode,
     Tag,
     MovieTag,
@@ -1274,7 +1275,33 @@ async def list_sessions(request: Request, _=Depends(verify_admin)):
             for s, u in pairing_sessions
         ]
 
-    return {"web_sessions": web_sessions, "pairing_sessions": pairing}
+        # Device pairing sessions (unclaimed and not expired)
+        device_sessions = (
+            db.query(DevicePairingSession)
+            .filter(
+                DevicePairingSession.expires_at > now,
+                DevicePairingSession.claimed == False,  # noqa: E712
+            )
+            .order_by(DevicePairingSession.created_at.desc())
+            .all()
+        )
+        device = [
+            {
+                "token": s.device_token[:8] + "...",
+                "token_full": s.device_token,
+                "short_code": s.short_code,
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+                "expires_at": s.expires_at.isoformat() if s.expires_at else None,
+                "type": "device",
+            }
+            for s in device_sessions
+        ]
+
+    return {
+        "web_sessions": web_sessions,
+        "pairing_sessions": pairing,
+        "device_sessions": device,
+    }
 
 
 @router.delete("/api/sessions/web/{token}")

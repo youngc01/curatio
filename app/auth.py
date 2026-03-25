@@ -20,7 +20,7 @@ from loguru import logger
 
 from app.config import settings
 from app.crypto import encrypt_token, decrypt_token
-from app.models import AppPairingSession, UserSession, User
+from app.models import AppPairingSession, DevicePairingSession, UserSession, User
 
 # Password hashing context (bcrypt)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -205,6 +205,108 @@ def claim_pairing_session(
     }
 
 
+def create_device_pairing_session(db: Session) -> dict:
+    """
+    Create a device-initiated pairing session (no auth required).
+
+    The device displays the short_code on screen. An authenticated user
+    claims it via /auth/device/claim to link their account.
+
+    Returns dict with device_token, short_code, expires_at.
+    """
+    device_token = secrets.token_hex(32)
+
+    # Generate unique short code (retry on collision)
+    for _ in range(10):
+        short_code = _generate_short_code()
+        existing = (
+            db.query(DevicePairingSession)
+            .filter(
+                DevicePairingSession.short_code == short_code,
+                DevicePairingSession.claimed == False,  # noqa: E712
+                DevicePairingSession.expires_at > datetime.utcnow(),
+            )
+            .first()
+        )
+        if not existing:
+            break
+    else:
+        raise RuntimeError("Failed to generate unique short code")
+
+    expires_at = datetime.utcnow() + timedelta(minutes=5)
+
+    session = DevicePairingSession(
+        device_token=device_token,
+        short_code=short_code,
+        expires_at=expires_at,
+    )
+    db.add(session)
+    db.commit()
+
+    return {
+        "device_token": device_token,
+        "short_code": short_code,
+        "expires_at": expires_at.isoformat(),
+    }
+
+
+def claim_device_pairing_session(db: Session, short_code: str, user: User) -> bool:
+    """
+    Claim a device pairing session by short_code (authenticated user).
+
+    Links the user's account to the device session so the device can
+    retrieve user_key on its next poll.
+
+    Returns True if claimed, False if invalid/expired/already claimed.
+    """
+    session = (
+        db.query(DevicePairingSession)
+        .filter(DevicePairingSession.short_code == short_code.upper())
+        .first()
+    )
+    if not session:
+        return False
+    if session.claimed:
+        return False
+    if datetime.utcnow() > session.expires_at:
+        return False
+
+    session.user_id = user.id
+    session.claimed = True
+    db.commit()
+
+    logger.info(f"Device pairing claimed by user {user.id}")
+    return True
+
+
+def poll_device_pairing_session(db: Session, device_token: str) -> Optional[dict]:
+    """
+    Poll a device pairing session by device_token.
+
+    Returns dict with user_key and manifest_url if claimed, or None if still pending.
+    """
+    session = (
+        db.query(DevicePairingSession)
+        .filter(DevicePairingSession.device_token == device_token)
+        .first()
+    )
+    if not session:
+        return None
+    if datetime.utcnow() > session.expires_at:
+        return None
+    if not session.claimed or not session.user_id:
+        return None
+
+    user = db.query(User).filter(User.id == session.user_id).first()
+    if not user:
+        return None
+
+    return {
+        "user_key": user.user_key,
+        "manifest_url": f"{settings.base_url}/{user.user_key}/manifest.json",
+    }
+
+
 def cleanup_expired_sessions(db: Session) -> int:
     """Remove expired pairing sessions and user sessions. Returns count deleted."""
     now = datetime.utcnow()
@@ -215,6 +317,16 @@ def cleanup_expired_sessions(db: Session) -> int:
         db.query(AppPairingSession).filter(AppPairingSession.expires_at < now).all()
     )
     for s in expired_pairing:
+        db.delete(s)
+        count += 1
+
+    # Expired device pairing sessions
+    expired_device = (
+        db.query(DevicePairingSession)
+        .filter(DevicePairingSession.expires_at < now)
+        .all()
+    )
+    for s in expired_device:
         db.delete(s)
         count += 1
 

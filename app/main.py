@@ -63,6 +63,9 @@ from app.auth import (
     verify_user_session,
     create_pairing_session,
     claim_pairing_session,
+    create_device_pairing_session,
+    claim_device_pairing_session,
+    poll_device_pairing_session,
 )
 from app.stream_proxy import get_streams
 from app.models import UserSession
@@ -1231,6 +1234,12 @@ class TOTPConfirmRequest(BaseModel):
     code: str
 
 
+class DeviceClaimRequest(BaseModel):
+    """Device pairing claim request (authenticated user claims a device code)."""
+
+    short_code: str
+
+
 def _get_user_from_session(request: Request, db: Session) -> User:
     """Extract and verify user from session cookie."""
     token = request.cookies.get("user_session")
@@ -1434,6 +1443,63 @@ async def pair_by_code(short_code: str, db: Session = Depends(get_db_dependency)
     if not result:
         raise HTTPException(status_code=404, detail="Invalid or expired code")
     return {"status": "ready", **result}
+
+
+# ---------------------------------------------------------------------------
+# Device pairing (tvOS / device-initiated flow)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/auth/device/code")
+@limiter.limit("10/minute")
+async def device_code(request: Request, db: Session = Depends(get_db_dependency)):
+    """Create a device pairing session (no auth required).
+
+    The device (e.g. Apple TV) calls this to get a short code to display
+    on screen. The user then enters the code on the web or mobile app
+    to link their account.
+
+    Returns device_token (for polling), short_code (to display), and expires_at.
+    """
+    result = create_device_pairing_session(db)
+    return result
+
+
+@app.get("/auth/device/status/{device_token}")
+@limiter.limit("30/minute")
+async def device_status(
+    request: Request,
+    device_token: str,
+    db: Session = Depends(get_db_dependency),
+):
+    """Poll this from the device to check if a user has claimed the code.
+
+    Returns {"status": "pending"} while waiting, or
+    {"status": "ready", "user_key": "...", "manifest_url": "..."} once claimed.
+    """
+    result = poll_device_pairing_session(db, device_token)
+    if not result:
+        return {"status": "pending"}
+    return {"status": "ready", **result}
+
+
+@app.post("/auth/device/claim")
+@limiter.limit("10/minute")
+async def device_claim(
+    request: Request,
+    payload: DeviceClaimRequest,
+    db: Session = Depends(get_db_dependency),
+):
+    """Authenticated user claims a device pairing code.
+
+    The user enters the short code displayed on the TV into the web/mobile app.
+    Requires a valid user_session cookie.
+    """
+    user = _get_user_from_session(request, db)
+    success = claim_device_pairing_session(db, payload.short_code, user)
+    if not success:
+        raise HTTPException(status_code=404, detail="Invalid or expired code")
+    return {"status": "ok", "message": "Device paired successfully"}
 
 
 @app.post("/auth/logout")
