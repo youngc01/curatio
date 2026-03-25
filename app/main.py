@@ -1465,7 +1465,7 @@ async def device_code(request: Request, db: Session = Depends(get_db_dependency)
     return result
 
 
-@app.get("/auth/device/status/{device_token}")
+@app.get("/auth/device/{device_token}/status")
 @limiter.limit("30/minute")
 async def device_status(
     request: Request,
