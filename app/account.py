@@ -346,31 +346,12 @@ async def pair_page():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pair Your App - Curatio</title>
+    <title>Pair a TV Device - Curatio</title>
     {_COMMON_STYLES}
 </head>
 <body>
     <div class="container">
-        <h1>Pair Your App</h1>
-        <p class="subtitle">Scan the QR code with the Curatio app, or type the code below.</p>
-
-        <div class="qr-container" id="qrContainer">
-            <p style="color: #888;">Generating pairing code...</p>
-        </div>
-
-        <div id="codeContainer" style="display:none;">
-            <label style="text-align:center; display:block;">Or enter this code in the app:</label>
-            <div class="code-display" id="shortCode"></div>
-            <p id="expiryNote" style="text-align:center; color:#888; font-size:0.8rem;"></p>
-        </div>
-
-        <div class="error" id="error"></div>
-
-        <button id="regenerateBtn" style="display:none;" onclick="generatePairing()">Generate New Code</button>
-
-        <hr style="border:none; border-top:1px solid #333; margin:32px 0;">
-
-        <h2 style="font-size:1.2rem;">Pair a TV Device</h2>
+        <h1>Pair a TV Device</h1>
         <p class="subtitle">Enter the code shown on your Apple TV or other device.</p>
 
         <div style="display:flex; gap:8px; justify-content:center; align-items:center; flex-wrap:wrap;">
@@ -390,8 +371,6 @@ async def pair_page():
     </div>
 
     <script>
-        let countdown;
-
         async function claimDevice() {{
             const input = document.getElementById('deviceCodeInput');
             const error = document.getElementById('deviceError');
@@ -439,58 +418,6 @@ async def pair_page():
             if (e.key === 'Enter') claimDevice();
         }});
 
-        async function generatePairing() {{
-            const qr = document.getElementById('qrContainer');
-            const code = document.getElementById('codeContainer');
-            const error = document.getElementById('error');
-            const regen = document.getElementById('regenerateBtn');
-            error.style.display = 'none';
-            regen.style.display = 'none';
-            qr.innerHTML = '<p style="color:#888;">Generating pairing code...</p>';
-            code.style.display = 'none';
-
-            if (countdown) clearInterval(countdown);
-
-            try {{
-                const resp = await fetch('/auth/pair/create', {{ method: 'POST' }});
-                if (!resp.ok) {{
-                    if (resp.status === 401) {{ window.location.href = '/account/login'; return; }}
-                    const data = await resp.json();
-                    error.textContent = data.detail || 'Failed to create pairing session';
-                    error.style.display = 'block';
-                    regen.style.display = 'block';
-                    return;
-                }}
-                const data = await resp.json();
-
-                qr.innerHTML = '<img src="' + data.qr_data_url + '" alt="QR Code" width="220" height="220">';
-                document.getElementById('shortCode').textContent = data.short_code;
-                code.style.display = 'block';
-
-                // Countdown
-                let remaining = 300;
-                const note = document.getElementById('expiryNote');
-                note.textContent = 'Expires in 5:00';
-                countdown = setInterval(() => {{
-                    remaining--;
-                    if (remaining <= 0) {{
-                        clearInterval(countdown);
-                        note.textContent = 'Expired';
-                        regen.style.display = 'block';
-                        return;
-                    }}
-                    const m = Math.floor(remaining / 60);
-                    const s = remaining % 60;
-                    note.textContent = 'Expires in ' + m + ':' + String(s).padStart(2, '0');
-                }}, 1000);
-            }} catch (err) {{
-                error.textContent = 'Network error. Please try again.';
-                error.style.display = 'block';
-                regen.style.display = 'block';
-            }}
-        }}
-
-        generatePairing();
     </script>
 </body>
 </html>"""
