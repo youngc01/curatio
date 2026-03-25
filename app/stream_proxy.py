@@ -37,6 +37,9 @@ def _get_aiostreams_url(tier: str, db: Session) -> Optional[str]:
     key = f"aiostreams_{tier}_bw_url"
     setting = db.query(AdminSetting).filter(AdminSetting.key == key).first()
     url = setting.value.rstrip("/") if setting and setting.value else ""
+    # Strip /manifest.json suffix if admin pasted the full manifest URL
+    if url.endswith("/manifest.json"):
+        url = url[: -len("/manifest.json")]
     _aiostreams_url_cache[cache_key] = (now, url)
     return url or None
 
