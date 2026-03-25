@@ -29,10 +29,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.models import User, MovieTag, MediaMetadata, WatchEvent
-from app.trakt_client import trakt_client
-from app.tmdb_client import tmdb_client
-from app.catalog_generator import CatalogGenerator
+from app.models import User, MovieTag, MediaMetadata, WatchEvent  # noqa: E402
+from app.trakt_client import trakt_client  # noqa: E402
+from app.tmdb_client import tmdb_client  # noqa: E402
+from app.catalog_generator import CatalogGenerator  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Catalog slot ordering — controls row order in Stremio (lower = higher up)

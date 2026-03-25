@@ -31,7 +31,7 @@ from app.catalog_generator import CatalogGenerator  # noqa: E402
 # Set by default (= not paused). Admin endpoints toggle this.
 # Uses threading.Event so it works across the main event loop and the
 # build thread (build runs in asyncio.to_thread to avoid blocking the UI).
-import threading as _threading
+import threading as _threading  # noqa: E402
 
 pause_event = _threading.Event()
 pause_event.set()
