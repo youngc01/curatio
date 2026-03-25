@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from loguru import logger
 from sqlalchemy import func
 
+from app.auth import verify_password, verify_totp, decrypt_totp_secret
 from app.config import settings
 from app.database import get_db
 from app.models import (
@@ -232,22 +233,48 @@ def _mask(value: str) -> str:
 
 @router.post("/api/login")
 async def admin_login(request: Request):
-    """Authenticate with master password."""
-    body = await request.json()
-    password = body.get("password", "")
+    """Authenticate via user credentials (email + password + 2FA) or master password.
 
-    if password != settings.master_password:
-        raise HTTPException(status_code=401, detail="Invalid password")
+    User-based login: send {"email", "password", "totp_code"}.
+    Master password fallback: send {"password"} only (no email).
+    """
+    body = await request.json()
+    email = body.get("email", "").strip().lower()
+    password = body.get("password", "")
+    totp_code = body.get("totp_code", "")
+
+    user_id = None
+
+    if email:
+        # --- User-based admin login ---
+        with get_db() as db:
+            user = db.query(User).filter(User.email == email).first()
+            if not user or not user.password_hash:
+                raise HTTPException(status_code=401, detail="Invalid credentials")
+            if not verify_password(password, user.password_hash):
+                raise HTTPException(status_code=401, detail="Invalid credentials")
+            if not user.is_admin:
+                raise HTTPException(status_code=403, detail="Not an admin")
+            if user.totp_enabled:
+                if not totp_code:
+                    raise HTTPException(status_code=401, detail="2FA code required")
+                secret = decrypt_totp_secret(user.totp_secret)
+                if not verify_totp(secret, totp_code):
+                    raise HTTPException(status_code=401, detail="Invalid 2FA code")
+            user_id = user.id
+    else:
+        # --- Master password fallback ---
+        if password != settings.master_password:
+            raise HTTPException(status_code=401, detail="Invalid password")
 
     token = secrets.token_hex(32)
     expires_at = datetime.utcnow() + SESSION_DURATION
 
     with get_db() as db:
-        # Clean up expired sessions
         db.query(AdminSession).filter(
             AdminSession.expires_at < datetime.utcnow()
         ).delete()
-        db.add(AdminSession(token=token, expires_at=expires_at))
+        db.add(AdminSession(token=token, user_id=user_id, expires_at=expires_at))
 
     response = JSONResponse({"status": "ok"})
     response.set_cookie(
@@ -1098,6 +1125,7 @@ async def list_users(request: Request, _=Depends(verify_admin)):
                     "display_name": getattr(u, "display_name", None),
                     "totp_enabled": getattr(u, "totp_enabled", False),
                     "bandwidth_tier": getattr(u, "bandwidth_tier", "high"),
+                    "is_admin": getattr(u, "is_admin", False),
                     "created_at": u.created_at.isoformat() if u.created_at else None,
                     "last_login": u.last_login.isoformat() if u.last_login else None,
                     "last_sync": u.last_sync.isoformat() if u.last_sync else None,
@@ -1214,6 +1242,21 @@ async def reset_user_2fa(user_id: int, request: Request, _=Depends(verify_admin)
         db.commit()
         logger.info(f"Admin reset 2FA for user {user_id}")
     return {"status": "ok"}
+
+
+@router.post("/api/users/{user_id}/admin")
+async def set_user_admin(user_id: int, request: Request, _=Depends(verify_admin)):
+    """Promote or demote a user as admin."""
+    body = await request.json()
+    is_admin = body.get("is_admin", False)
+    with get_db() as db:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+        user.is_admin = bool(is_admin)
+        db.commit()
+        logger.info(f"User {user_id} admin status set to {user.is_admin}")
+    return {"status": "ok", "is_admin": is_admin}
 
 
 # ---- Sessions Management ----
@@ -1568,10 +1611,15 @@ tr:last-child td{border-bottom:none}
     <h1>Curatio</h1>
     <p>Admin Portal</p>
     <form id="login-form">
-      <input type="password" id="login-password" placeholder="Master Password" autocomplete="current-password" autofocus>
+      <div id="user-login-fields">
+        <input type="email" id="login-email" placeholder="Email" autocomplete="email" autofocus>
+        <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+        <input type="text" id="login-totp" placeholder="2FA Code" maxlength="6" inputmode="numeric" autocomplete="one-time-code" style="display:none">
+      </div>
       <button type="submit">Sign In</button>
     </form>
     <div class="login-error" id="login-error"></div>
+    <p style="margin-top:20px"><a href="#" id="toggle-master-pw" style="color:#8b949e;font-size:13px;text-decoration:none">Use master password instead</a></p>
   </div>
 </div>
 
@@ -1679,8 +1727,8 @@ tr:last-child td{border-bottom:none}
         </p>
         <div style="overflow-x:auto">
         <table>
-          <thead><tr><th>User</th><th>Email</th><th>Source</th><th>2FA</th><th>Bandwidth</th><th>Status</th><th>Created</th><th>Last Login</th><th>Catalogs</th><th>Actions</th></tr></thead>
-          <tbody id="users-tbody"><tr><td colspan="10" style="color:#8b949e">Loading...</td></tr></tbody>
+          <thead><tr><th>User</th><th>Email</th><th>Source</th><th>2FA</th><th>Admin</th><th>Bandwidth</th><th>Status</th><th>Created</th><th>Last Login</th><th>Catalogs</th><th>Actions</th></tr></thead>
+          <tbody id="users-tbody"><tr><td colspan="11" style="color:#8b949e">Loading...</td></tr></tbody>
         </table>
         </div>
       </div>
@@ -1971,14 +2019,16 @@ async function api(method, url, data) {
   const opts = { method, headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin' };
   if (data) opts.body = JSON.stringify(data);
   const res = await fetch(url, opts);
-  if (res.status === 401) {
-    document.getElementById('dashboard').style.display = 'none';
-    document.getElementById('login-screen').style.display = 'flex';
-    throw new Error('auth');
-  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || res.statusText);
+    const detail = err.detail || res.statusText;
+    if (res.status === 401 && document.getElementById('dashboard').style.display !== 'none') {
+      // Session expired — show login screen
+      document.getElementById('dashboard').style.display = 'none';
+      document.getElementById('login-screen').style.display = 'flex';
+      throw new Error('auth');
+    }
+    throw new Error(detail);
   }
   return res.json();
 }
@@ -2023,25 +2073,60 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 
 // ---- Auth ----
 let _checkAuthAbort = null;
+let _masterPwMode = false;
+
+document.getElementById('toggle-master-pw').addEventListener('click', (e) => {
+  e.preventDefault();
+  _masterPwMode = !_masterPwMode;
+  const emailEl = document.getElementById('login-email');
+  const totpEl = document.getElementById('login-totp');
+  const link = document.getElementById('toggle-master-pw');
+  if (_masterPwMode) {
+    emailEl.style.display = 'none';
+    totpEl.style.display = 'none';
+    document.getElementById('login-password').placeholder = 'Master Password';
+    link.textContent = 'Use email login instead';
+    document.getElementById('login-password').focus();
+  } else {
+    emailEl.style.display = '';
+    document.getElementById('login-password').placeholder = 'Password';
+    link.textContent = 'Use master password instead';
+    emailEl.focus();
+  }
+});
 
 document.getElementById('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  // Abort any pending checkAuth request so its stale 401 cannot
-  // re-show the login screen after we successfully log in.
   if (_checkAuthAbort) { _checkAuthAbort.abort(); _checkAuthAbort = null; }
   const btn = e.target.querySelector('button');
-  const pw = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
   btn.disabled = true;
   btn.textContent = 'Signing in...';
-  document.getElementById('login-error').textContent = '';
+  errEl.textContent = '';
+
+  const pw = document.getElementById('login-password').value;
+  const payload = _masterPwMode
+    ? { password: pw }
+    : {
+        email: document.getElementById('login-email').value,
+        password: pw,
+        totp_code: document.getElementById('login-totp').value
+      };
+
   try {
-    await api('POST', '/admin/api/login', { password: pw });
+    await api('POST', '/admin/api/login', payload);
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';
     loadAll();
   } catch (err) {
-    document.getElementById('login-error').textContent =
-      err.message === 'auth' ? 'Invalid password' : err.message;
+    if (err.message === '2FA code required') {
+      document.getElementById('login-totp').style.display = '';
+      document.getElementById('login-totp').focus();
+      errEl.textContent = 'Enter your 2FA code.';
+    } else {
+      errEl.textContent =
+        err.message === 'auth' ? 'Invalid credentials' : err.message;
+    }
     btn.disabled = false;
     btn.textContent = 'Sign In';
   }
@@ -2052,6 +2137,9 @@ async function logout() {
   document.getElementById('dashboard').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   document.getElementById('login-password').value = '';
+  document.getElementById('login-email').value = '';
+  document.getElementById('login-totp').value = '';
+  document.getElementById('login-totp').style.display = 'none';
 }
 
 async function checkAuth() {
@@ -2522,7 +2610,7 @@ async function loadUsers() {
     var users = await api('GET', '/admin/api/users');
     var tbody = document.getElementById('users-tbody');
     if (users.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="10" style="color:#8b949e">No users yet. Share invite codes to get started.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="11" style="color:#8b949e">No users yet. Share invite codes to get started.</td></tr>';
       return;
     }
     tbody.innerHTML = users.map(function(u) {
@@ -2538,6 +2626,9 @@ async function loadUsers() {
       var tfaBadge = u.totp_enabled
         ? '<span class="badge badge-completed">On</span>'
         : '<span style="color:#8b949e">Off</span>';
+      var adminBadge = u.is_admin
+        ? '<button class="btn btn-sm" style="background:#238636;color:#fff;padding:2px 8px;font-size:11px" onclick="toggleAdmin(' + u.id + ',false)">Admin</button>'
+        : '<button class="btn btn-sm btn-secondary" style="padding:2px 8px;font-size:11px" onclick="toggleAdmin(' + u.id + ',true)">-</button>';
       var bwSelect = '<select onchange="setBandwidth(' + u.id + ',this.value)" style="background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:4px;padding:4px 8px;font-size:12px">' +
         '<option value="high"' + (u.bandwidth_tier === 'high' ? ' selected' : '') + '>High</option>' +
         '<option value="low"' + (u.bandwidth_tier === 'low' ? ' selected' : '') + '>Low</option></select>';
@@ -2554,6 +2645,7 @@ async function loadUsers() {
         '<td>' + (u.email || '<span style="color:#8b949e">-</span>') + '</td>' +
         '<td>' + sourceBadge + '</td>' +
         '<td>' + tfaBadge + '</td>' +
+        '<td>' + adminBadge + '</td>' +
         '<td>' + bwSelect + '</td>' +
         '<td>' + status + '</td>' +
         '<td>' + fmtDate(u.created_at) + '</td>' +
@@ -2604,6 +2696,18 @@ async function reset2FA(userId, username) {
   try {
     await api('POST', '/admin/api/users/' + userId + '/reset-2fa');
     toast('2FA reset for ' + username, 'success');
+    loadUsers();
+  } catch(e) {
+    toast('Failed: ' + e.message, 'error');
+  }
+}
+
+async function toggleAdmin(userId, makeAdmin) {
+  var action = makeAdmin ? 'Promote' : 'Demote';
+  if (!confirm(action + ' user #' + userId + ' as admin?')) return;
+  try {
+    await api('POST', '/admin/api/users/' + userId + '/admin', { is_admin: makeAdmin });
+    toast('User ' + (makeAdmin ? 'promoted to' : 'removed from') + ' admin', 'success');
     loadUsers();
   } catch(e) {
     toast('Failed: ' + e.message, 'error');

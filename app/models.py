@@ -42,6 +42,7 @@ class AdminSession(Base):
     __tablename__ = "admin_sessions"
 
     token = Column(String(64), primary_key=True)
+    user_id = Column(Integer, nullable=True)  # NULL for master-password sessions
     expires_at = Column(DateTime, nullable=False)
 
 
@@ -192,6 +193,7 @@ class User(Base):
     last_sync = Column(DateTime, nullable=True)
 
     is_active = Column(Boolean, default=True, nullable=False)
+    is_admin = Column(Boolean, default=False, nullable=False)
 
     # Relationships
     personal_catalogs = relationship(
