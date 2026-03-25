@@ -464,9 +464,7 @@ class DevicePairingSession(Base):
     __tablename__ = "device_pairing_sessions"
 
     device_token = Column(String(64), primary_key=True)
-    user_id = Column(
-        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True
-    )
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     short_code = Column(String(8), unique=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     expires_at = Column(DateTime, nullable=False)  # 5-minute expiry

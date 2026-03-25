@@ -322,7 +322,9 @@ def cleanup_expired_sessions(db: Session) -> int:
 
     # Expired device pairing sessions
     expired_device = (
-        db.query(DevicePairingSession).filter(DevicePairingSession.expires_at < now).all()
+        db.query(DevicePairingSession)
+        .filter(DevicePairingSession.expires_at < now)
+        .all()
     )
     for s in expired_device:
         db.delete(s)
