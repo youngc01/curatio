@@ -495,3 +495,89 @@ async def pair_page():
 </body>
 </html>"""
     )
+
+
+@router.get("/activate", response_class=HTMLResponse)
+async def activate_page():
+    """Device activation page — enter the code shown on your TV to pair it."""
+    return HTMLResponse(
+        content=f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Activate Device - Curatio</title>
+    {_COMMON_STYLES}
+</head>
+<body>
+    <div class="container">
+        <h1>Activate Your Device</h1>
+        <p class="subtitle">Enter the code shown on your Apple TV to link it to your account.</p>
+
+        <div style="display:flex; gap:8px; justify-content:center; align-items:center; flex-wrap:wrap; margin-top:16px;">
+            <input type="text" id="deviceCodeInput" maxlength="6" placeholder="ABC123" autofocus
+                   style="font-family:monospace; font-size:1.6rem; letter-spacing:0.3em;
+                          text-align:center; width:200px; padding:12px; border-radius:8px;
+                          border:1px solid #444; background:#1a1a2e; color:#fff;
+                          text-transform:uppercase;">
+            <button id="deviceClaimBtn" onclick="claimDevice()">Activate</button>
+        </div>
+        <div class="error" id="deviceError"></div>
+        <div id="deviceSuccess" style="display:none; color:#4caf50; text-align:center; margin-top:12px; font-size:1.1rem;"></div>
+
+        <div class="footer" style="margin-top: 32px;">
+            <a href="/account" class="link">Back to Account</a>
+        </div>
+    </div>
+
+    <script>
+        async function claimDevice() {{
+            const input = document.getElementById('deviceCodeInput');
+            const error = document.getElementById('deviceError');
+            const success = document.getElementById('deviceSuccess');
+            const btn = document.getElementById('deviceClaimBtn');
+            error.style.display = 'none';
+            success.style.display = 'none';
+
+            const code = input.value.trim().toUpperCase();
+            if (!code || code.length < 4) {{
+                error.textContent = 'Please enter the code shown on your device.';
+                error.style.display = 'block';
+                return;
+            }}
+
+            btn.disabled = true;
+            btn.textContent = 'Activating...';
+
+            try {{
+                const resp = await fetch('/auth/device/claim', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ short_code: code }})
+                }});
+                if (!resp.ok) {{
+                    if (resp.status === 401) {{ window.location.href = '/account/login'; return; }}
+                    const data = await resp.json();
+                    error.textContent = data.detail || 'Invalid or expired code. Please try again.';
+                    error.style.display = 'block';
+                    return;
+                }}
+                success.textContent = 'Device activated successfully! You can now use your TV app.';
+                success.style.display = 'block';
+                input.value = '';
+            }} catch (err) {{
+                error.textContent = 'Network error. Please try again.';
+                error.style.display = 'block';
+            }} finally {{
+                btn.disabled = false;
+                btn.textContent = 'Activate';
+            }}
+        }}
+
+        document.getElementById('deviceCodeInput').addEventListener('keydown', function(e) {{
+            if (e.key === 'Enter') claimDevice();
+        }});
+    </script>
+</body>
+</html>"""
+    )
