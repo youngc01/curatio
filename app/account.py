@@ -56,7 +56,8 @@ _COMMON_STYLES = """
 @router.get("/register", response_class=HTMLResponse)
 async def register_page():
     """Registration page."""
-    return HTMLResponse(content=f"""<!DOCTYPE html>
+    return HTMLResponse(
+        content=f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -135,13 +136,15 @@ async def register_page():
         }});
     </script>
 </body>
-</html>""")
+</html>"""
+    )
 
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page():
     """Login page."""
-    return HTMLResponse(content=f"""<!DOCTYPE html>
+    return HTMLResponse(
+        content=f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -232,13 +235,15 @@ async def login_page():
         }});
     </script>
 </body>
-</html>""")
+</html>"""
+    )
 
 
 @router.get("/setup-2fa", response_class=HTMLResponse)
 async def setup_2fa_page():
     """2FA setup page — shows QR code for authenticator app."""
-    return HTMLResponse(content=f"""<!DOCTYPE html>
+    return HTMLResponse(
+        content=f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -328,13 +333,15 @@ async def setup_2fa_page():
         }});
     </script>
 </body>
-</html>""")
+</html>"""
+    )
 
 
 @router.get("/pair", response_class=HTMLResponse)
 async def pair_page():
     """App pairing page — shows QR code and short code for the custom Stremio app."""
-    return HTMLResponse(content=f"""<!DOCTYPE html>
+    return HTMLResponse(
+        content=f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -486,13 +493,15 @@ async def pair_page():
         generatePairing();
     </script>
 </body>
-</html>""")
+</html>"""
+    )
 
 
 @router.get("/activate", response_class=HTMLResponse)
 async def activate_page():
     """Device activation page — enter the code shown on your TV to pair it."""
-    return HTMLResponse(content=f"""<!DOCTYPE html>
+    return HTMLResponse(
+        content=f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -570,4 +579,5 @@ async def activate_page():
         }});
     </script>
 </body>
-</html>""")
+</html>"""
+    )
