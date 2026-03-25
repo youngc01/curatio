@@ -452,3 +452,22 @@ class AppPairingSession(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     expires_at = Column(DateTime, nullable=False)  # 5-minute expiry
     claimed = Column(Boolean, default=False, nullable=False)
+
+
+class DevicePairingSession(Base):
+    """Device-initiated pairing sessions (e.g. tvOS).
+
+    Flow: device creates session (no auth) → displays code on screen →
+    authenticated user claims code via web/phone → device polls until claimed.
+    """
+
+    __tablename__ = "device_pairing_sessions"
+
+    device_token = Column(String(64), primary_key=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    short_code = Column(String(8), unique=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)  # 5-minute expiry
+    claimed = Column(Boolean, default=False, nullable=False)
