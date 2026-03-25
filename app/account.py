@@ -56,7 +56,8 @@ _COMMON_STYLES = """
 @router.get("/register", response_class=HTMLResponse)
 async def register_page():
     """Registration page."""
-    return HTMLResponse(content=f"""<!DOCTYPE html>
+    return HTMLResponse(
+        content=f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -135,13 +136,15 @@ async def register_page():
         }});
     </script>
 </body>
-</html>""")
+</html>"""
+    )
 
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page():
     """Login page."""
-    return HTMLResponse(content=f"""<!DOCTYPE html>
+    return HTMLResponse(
+        content=f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -232,13 +235,15 @@ async def login_page():
         }});
     </script>
 </body>
-</html>""")
+</html>"""
+    )
 
 
 @router.get("/setup-2fa", response_class=HTMLResponse)
 async def setup_2fa_page():
     """2FA setup page — shows QR code for authenticator app."""
-    return HTMLResponse(content=f"""<!DOCTYPE html>
+    return HTMLResponse(
+        content=f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -328,13 +333,15 @@ async def setup_2fa_page():
         }});
     </script>
 </body>
-</html>""")
+</html>"""
+    )
 
 
 @router.get("/pair", response_class=HTMLResponse)
 async def pair_page():
     """App pairing page — shows QR code and short code for the custom Stremio app."""
-    return HTMLResponse(content=f"""<!DOCTYPE html>
+    return HTMLResponse(
+        content=f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -361,6 +368,22 @@ async def pair_page():
 
         <button id="regenerateBtn" style="display:none;" onclick="generatePairing()">Generate New Code</button>
 
+        <hr style="border:none; border-top:1px solid #333; margin:32px 0;">
+
+        <h2 style="font-size:1.2rem;">Pair a TV Device</h2>
+        <p class="subtitle">Enter the code shown on your Apple TV or other device.</p>
+
+        <div style="display:flex; gap:8px; justify-content:center; align-items:center; flex-wrap:wrap;">
+            <input type="text" id="deviceCodeInput" maxlength="6" placeholder="ABC123"
+                   style="font-family:monospace; font-size:1.4rem; letter-spacing:0.3em;
+                          text-align:center; width:180px; padding:10px; border-radius:8px;
+                          border:1px solid #444; background:#1a1a2e; color:#fff;
+                          text-transform:uppercase;">
+            <button id="deviceClaimBtn" onclick="claimDevice()">Pair</button>
+        </div>
+        <div class="error" id="deviceError"></div>
+        <div id="deviceSuccess" style="display:none; color:#4caf50; text-align:center; margin-top:8px;"></div>
+
         <div class="footer" style="margin-top: 24px;">
             <a href="/auth/logout" class="link" onclick="fetch('/auth/logout',{{method:'POST'}})">Log out</a>
         </div>
@@ -368,6 +391,53 @@ async def pair_page():
 
     <script>
         let countdown;
+
+        async function claimDevice() {{
+            const input = document.getElementById('deviceCodeInput');
+            const error = document.getElementById('deviceError');
+            const success = document.getElementById('deviceSuccess');
+            const btn = document.getElementById('deviceClaimBtn');
+            error.style.display = 'none';
+            success.style.display = 'none';
+
+            const code = input.value.trim().toUpperCase();
+            if (!code || code.length < 4) {{
+                error.textContent = 'Please enter the code shown on your device.';
+                error.style.display = 'block';
+                return;
+            }}
+
+            btn.disabled = true;
+            btn.textContent = 'Pairing...';
+
+            try {{
+                const resp = await fetch('/auth/device/claim', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ short_code: code }})
+                }});
+                if (!resp.ok) {{
+                    if (resp.status === 401) {{ window.location.href = '/account/login'; return; }}
+                    const data = await resp.json();
+                    error.textContent = data.detail || 'Invalid or expired code.';
+                    error.style.display = 'block';
+                    return;
+                }}
+                success.textContent = 'Device paired successfully!';
+                success.style.display = 'block';
+                input.value = '';
+            }} catch (err) {{
+                error.textContent = 'Network error. Please try again.';
+                error.style.display = 'block';
+            }} finally {{
+                btn.disabled = false;
+                btn.textContent = 'Pair';
+            }}
+        }}
+
+        document.getElementById('deviceCodeInput').addEventListener('keydown', function(e) {{
+            if (e.key === 'Enter') claimDevice();
+        }});
 
         async function generatePairing() {{
             const qr = document.getElementById('qrContainer');
@@ -423,4 +493,5 @@ async def pair_page():
         generatePairing();
     </script>
 </body>
-</html>""")
+</html>"""
+    )
