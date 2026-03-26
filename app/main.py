@@ -839,13 +839,14 @@ def _get_cached_catalog(
     user_id: int | None = None,
     hide_foreign: bool = False,
     hide_adult: bool = False,
+    hide_unreleased: bool = False,
 ) -> list:
     """Get catalog items with TTL + LRU caching.
 
     Only opens a DB session on cache miss. Serves stale cached data when
     the database is temporarily unreachable (e.g. transient DNS failures).
     """
-    cache_key = f"{catalog_id}:user={user_id}:f={hide_foreign}:a={hide_adult}"
+    cache_key = f"{catalog_id}:user={user_id}:f={hide_foreign}:a={hide_adult}:u={hide_unreleased}"
     now = time()
     ttl = settings.cache_ttl
 
@@ -873,6 +874,7 @@ def _get_cached_catalog(
                 user_id=user_id,
                 hide_foreign=hide_foreign,
                 hide_adult=hide_adult,
+                hide_unreleased=hide_unreleased,
             )
             _catalog_cache[cache_key] = (now, items)
             _cache_evict()
@@ -997,6 +999,7 @@ def catalog(
             db,
             hide_foreign=settings.hide_foreign,
             hide_adult=settings.hide_adult,
+            hide_unreleased=settings.hide_unreleased,
         )
         return _serve_catalog(items, catalog_id, catalog_type, skip)
 
@@ -1009,13 +1012,16 @@ def catalog(
     # Use global filter settings (controlled via admin panel)
     hf = settings.hide_foreign
     ha = settings.hide_adult
+    hu = settings.hide_unreleased
 
     if catalog_id.startswith("universal-"):
         actual_id = catalog_id.replace("universal-", "", 1)
-        items = _get_cached_catalog(actual_id, db, hide_foreign=hf, hide_adult=ha)
+        items = _get_cached_catalog(
+            actual_id, db, hide_foreign=hf, hide_adult=ha, hide_unreleased=hu
+        )
     elif catalog_id.startswith("personal-"):
         actual_id = catalog_id.replace("personal-", "", 1)
-        items = _get_cached_catalog(actual_id, db, user_id=user.id, hide_foreign=hf, hide_adult=ha)  # type: ignore[arg-type]
+        items = _get_cached_catalog(actual_id, db, user_id=user.id, hide_foreign=hf, hide_adult=ha, hide_unreleased=hu)  # type: ignore[arg-type]
     else:
         raise HTTPException(status_code=404, detail="Catalog not found")
 

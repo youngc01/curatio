@@ -6,7 +6,7 @@ No Gemini calls needed - everything is pre-computed from tags!
 """
 
 from typing import List, Dict, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy import func, and_, or_
 from sqlalchemy.orm import Session
 from loguru import logger
@@ -477,6 +477,7 @@ class CatalogGenerator:
         user_id: Optional[int] = None,
         hide_foreign: bool = False,
         hide_adult: bool = False,
+        hide_unreleased: bool = False,
     ) -> List[Dict]:
         """
         Get catalog content with metadata.
@@ -486,6 +487,7 @@ class CatalogGenerator:
             user_id: User ID (for personalized catalogs)
             hide_foreign: Exclude non-English content
             hide_adult: Exclude explicit/18+ content
+            hide_unreleased: Exclude movies not yet available digitally
 
         Returns:
             List of catalog items with metadata
@@ -536,6 +538,18 @@ class CatalogGenerator:
                 or_(
                     MediaMetadata.adult.isnot(True),
                     MediaMetadata.adult.is_(None),
+                )
+            )
+        if hide_unreleased:
+            # Hide movies whose release_date is in the future or within the
+            # last 45 days (typical theatrical-to-digital window).  Items with
+            # no release_date are kept so we don't accidentally drop items that
+            # simply haven't been backfilled yet.
+            cutoff = (datetime.utcnow() - timedelta(days=45)).strftime("%Y-%m-%d")
+            query = query.filter(
+                or_(
+                    MediaMetadata.release_date <= cutoff,
+                    MediaMetadata.release_date.is_(None),
                 )
             )
 
