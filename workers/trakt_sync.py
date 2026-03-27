@@ -609,7 +609,7 @@ def _pick_byw_seeds_local(
     all_watched_ids: Set[int],
     max_seeds: int = 5,
 ) -> List[Dict]:
-    """Pick BYW seed items from local watch events (most recent completions)."""
+    """Pick BYW seed items from local watch events (completions + imports)."""
 
     recent = (
         db.query(
@@ -620,7 +620,7 @@ def _pick_byw_seeds_local(
         )
         .filter(
             WatchEvent.user_id == user_id,
-            WatchEvent.action == "complete",
+            WatchEvent.action.in_(["complete", "imported"]),
         )
         .group_by(WatchEvent.tmdb_id, WatchEvent.media_type, WatchEvent.title)
         .order_by(func.max(WatchEvent.created_at).desc())
@@ -702,6 +702,20 @@ async def sync_local_user_catalogs(user: User, db: Session) -> int:
     }
     watched_show_ids: Set[int] = {r.tmdb_id for r in completed if r.media_type == "tv"}
 
+    # Include imported history for recommendation building (not for Up Next)
+    imported = (
+        db.query(WatchEvent.tmdb_id, WatchEvent.media_type)
+        .filter(WatchEvent.user_id == user.id, WatchEvent.action == "imported")
+        .distinct()
+        .all()
+    )
+    all_movie_ids: Set[int] = watched_movie_ids | {
+        r.tmdb_id for r in imported if r.media_type == "movie"
+    }
+    all_show_ids: Set[int] = watched_show_ids | {
+        r.tmdb_id for r in imported if r.media_type == "tv"
+    }
+
     logger.info(
         f"User {display}: "
         f"{len(watched_movie_ids)} watched movies, "
@@ -749,13 +763,11 @@ async def sync_local_user_catalogs(user: User, db: Session) -> int:
     # Step 3: "Because You Watched [Title]" — tag-based similarity
     # ------------------------------------------------------------------
     byw_seeds = _pick_byw_seeds_local(
-        db, user.id, watched_movie_ids | watched_show_ids, max_seeds=5
+        db, user.id, all_movie_ids | all_show_ids, max_seeds=5
     )
 
     for i, seed in enumerate(byw_seeds):
-        exclude = (
-            watched_movie_ids if seed["media_type"] == "movie" else watched_show_ids
-        )
+        exclude = all_movie_ids if seed["media_type"] == "movie" else all_show_ids
         similar_ids = find_similar_by_tags(
             db,
             reference_tmdb_id=seed["tmdb_id"],
@@ -784,8 +796,8 @@ async def sync_local_user_catalogs(user: User, db: Session) -> int:
     # Step 4: "Recommended For You" — tag-based taste profile
     # ------------------------------------------------------------------
     for media_label, watched_ids, media_type, slot in [
-        ("movies", watched_movie_ids, "movie", "rec-movie"),
-        ("shows", watched_show_ids, "tv", "rec-series"),
+        ("movies", all_movie_ids, "movie", "rec-movie"),
+        ("shows", all_show_ids, "tv", "rec-series"),
     ]:
         try:
             tmdb_ids = find_recommendations_by_taste(

@@ -581,3 +581,100 @@ async def activate_page():
 </body>
 </html>"""
     )
+
+
+@router.get("/import", response_class=HTMLResponse)
+async def import_page():
+    """CSV import page for seeding recommendations from TMDB IDs."""
+    return HTMLResponse(
+        content=f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Import Watch History - Curatio</title>
+    {_COMMON_STYLES}
+    <style>
+        textarea {{
+            width: 100%; padding: 12px; border: 1px solid #333; border-radius: 8px;
+            background: #0d0d1a; color: #fff; font-size: 0.9rem; outline: none;
+            font-family: monospace; resize: vertical; min-height: 180px;
+        }}
+        textarea:focus {{ border-color: #6c63ff; }}
+        .result {{ padding: 12px; border-radius: 8px; margin-top: 16px; font-size: 0.9rem; display: none; }}
+        .result.success {{ background: #0d2818; color: #4ade80; }}
+        .result.error {{ background: #2d0a0a; color: #f87171; }}
+        .info {{ color: #888; font-size: 0.8rem; margin-top: 8px; line-height: 1.5; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Import Watch History</h1>
+        <p class="subtitle">Paste TMDB IDs for series you've watched to improve your recommendations.</p>
+
+        <label>TMDB IDs (one per line or comma-separated)</label>
+        <textarea id="csvInput" placeholder="12345&#10;67890&#10;11111"></textarea>
+        <div class="info">
+            Only series (TV) TMDB IDs are supported. Imported items are used to build
+            recommendations &mdash; they won't appear in your Up Next list.
+            You can export these from Trakt or find them on themoviedb.org.
+        </div>
+
+        <div class="result" id="result"></div>
+
+        <button class="btn" id="importBtn" onclick="doImport()">Import</button>
+    </div>
+
+    <script>
+        async function doImport() {{
+            const btn = document.getElementById('importBtn');
+            const result = document.getElementById('result');
+            const csvText = document.getElementById('csvInput').value.trim();
+
+            if (!csvText) {{
+                result.className = 'result error';
+                result.textContent = 'Please paste some TMDB IDs first.';
+                result.style.display = 'block';
+                return;
+            }}
+
+            btn.disabled = true;
+            btn.textContent = 'Importing...';
+            result.style.display = 'none';
+
+            try {{
+                const resp = await fetch('/api/import-history', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{ csv_text: csvText }}),
+                }});
+
+                if (!resp.ok) {{
+                    if (resp.status === 401) {{
+                        window.location.href = '/account/login';
+                        return;
+                    }}
+                    const data = await resp.json();
+                    throw new Error(data.detail || 'Import failed');
+                }}
+
+                const data = await resp.json();
+                result.className = 'result success';
+                result.textContent = `Imported ${{data.imported}} series` +
+                    (data.skipped > 0 ? ` (${{data.skipped}} already imported)` : '') +
+                    '. Your recommendations will update shortly.';
+                result.style.display = 'block';
+                document.getElementById('csvInput').value = '';
+            }} catch (e) {{
+                result.className = 'result error';
+                result.textContent = e.message;
+                result.style.display = 'block';
+            }} finally {{
+                btn.disabled = false;
+                btn.textContent = 'Import';
+            }}
+        }}
+    </script>
+</body>
+</html>"""
+    )

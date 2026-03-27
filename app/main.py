@@ -1577,6 +1577,74 @@ async def scrobble(
     return {"status": "ok"}
 
 
+@app.post("/api/import-history")
+@limiter.limit("10/minute")
+async def import_history(request: Request):
+    """Import a CSV of TMDB IDs (series) to seed recommendations.
+
+    Accepts a JSON body with a ``csv_text`` field containing one TMDB ID per
+    line (or comma-separated).  Items are stored as WatchEvent with
+    action='imported' so they influence recommendations without appearing in
+    Up Next or counting as fully watched.
+    """
+    with get_db() as db:
+        user = _get_user_from_session(request, db)
+
+        body = await request.json()
+        csv_text: str = body.get("csv_text", "")
+        if not csv_text.strip():
+            raise HTTPException(status_code=400, detail="No data provided")
+
+        # Parse TMDB IDs — support one-per-line, comma-separated, or mixed
+        raw_tokens = csv_text.replace(",", "\n").splitlines()
+        tmdb_ids: list[int] = []
+        for token in raw_tokens:
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                tmdb_ids.append(int(token))
+            except ValueError:
+                continue  # skip header rows or non-numeric lines
+
+        if not tmdb_ids:
+            raise HTTPException(status_code=400, detail="No valid TMDB IDs found")
+
+        # Deduplicate against already-imported IDs for this user
+        existing = set(
+            r.tmdb_id
+            for r in db.query(WatchEvent.tmdb_id)
+            .filter(
+                WatchEvent.user_id == user.id,
+                WatchEvent.media_type == "tv",
+                WatchEvent.action == "imported",
+            )
+            .all()
+        )
+
+        added = 0
+        for tid in tmdb_ids:
+            if tid in existing:
+                continue
+            existing.add(tid)
+            db.add(
+                WatchEvent(
+                    user_id=user.id,
+                    tmdb_id=tid,
+                    media_type="tv",
+                    action="imported",
+                )
+            )
+            added += 1
+
+        db.commit()
+
+    # Trigger a catalog rebuild so new imports take effect
+    _schedule_local_sync(user.id)
+
+    return {"status": "ok", "imported": added, "skipped": len(tmdb_ids) - added}
+
+
 @app.get("/auth/verify-invite")
 async def verify_invite(
     invite: str = Query(..., description="Invite code to verify"),
