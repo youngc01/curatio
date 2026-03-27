@@ -6,11 +6,12 @@ Flow: Trakt tells us WHAT they watched → tag DB powers the recommendations.
 
 Generates Netflix/Prime/HBO-style catalog rows:
   1. "Up Next"                         (series watched in last 2 weeks)
-  2. "Because You Watched [Title]" x5  (tag-based similarity)
-  3. "Recommended For You"             (tag-based taste profile)
-  4. "Top 10 Today"                    (daily most-watched, ranked 1-10)
-  5. "Trending Now"                    (Trakt community)
-  6. "Popular"                         (Trakt all-time favorites)
+  2. "Trending Now"                    (TMDB daily trending)
+  3. "New Releases"                    (last 90 days by popularity)
+  4. "Because You Watched [Title]" x5  (tag-based similarity)
+  5. "Top Picks / Recommended For You" (tag-based taste profile)
+  6. "Genre/Mood For You" x4           (taste-specific catalogs)
+  7. "Hidden Gems For You"             (high-quality low-popularity)
 
 Only digitally-released content — no anticipated/unreleased titles.
 """
@@ -40,32 +41,28 @@ from app.catalog_generator import CatalogGenerator  # noqa: E402
 # ---------------------------------------------------------------------------
 SLOT_ORDER = {
     "up-next": 0,
-    "top10-movie": 1,
-    "top10-series": 2,
-    "trakt-trending-movie": 3,
-    "trakt-trending-series": 4,
-    "popular-movie": 5,
-    "popular-series": 6,
-    "byw-1": 7,
-    "byw-2": 8,
-    "byw-3": 9,
-    "byw-4": 10,
-    "byw-5": 11,
-    "picks-movie": 12,
-    "picks-series": 13,
-    "rec-movie": 14,
-    "rec-series": 15,
-    "taste-0": 16,
-    "taste-1": 17,
-    "taste-2": 18,
-    "taste-3": 19,
-    "gems-movie": 20,
-    "gems-series": 21,
+    "trending-movie": 1,
+    "trending-series": 2,
+    "new-releases": 3,
+    "byw-1": 4,
+    "byw-2": 5,
+    "byw-3": 6,
+    "byw-4": 7,
+    "byw-5": 8,
+    "picks-movie": 9,
+    "picks-series": 10,
+    "rec-movie": 11,
+    "rec-series": 12,
+    "taste-0": 13,
+    "taste-1": 14,
+    "taste-2": 15,
+    "taste-3": 16,
+    "gems-movie": 17,
+    "gems-series": 18,
     # Discovery catalogs for users with no history
     "discover-movie": 2,
     "discover-series": 3,
     "discover-acclaimed": 4,
-    "discover-new": 5,
 }
 
 
@@ -826,16 +823,16 @@ async def _generate_common_catalogs(
     catalogs_created: int,
     display: str,
 ) -> int:
-    """Generate trending/popular/top10 catalogs + backfill metadata.
+    """Generate trending + new releases catalogs + backfill metadata.
 
     Shared by both the with-history and no-history paths.
     """
     from app.models import UserCatalog, UserCatalogContent
 
-    # Trending Now
+    # Trending Now (movies & series)
     for media_label, media_type, slot in [
-        ("movies", "movie", "trakt-trending-movie"),
-        ("shows", "tv", "trakt-trending-series"),
+        ("movies", "movie", "trending-movie"),
+        ("shows", "tv", "trending-series"),
     ]:
         try:
             data = (
@@ -858,57 +855,33 @@ async def _generate_common_catalogs(
         except Exception as e:
             logger.warning(f"  Trending ({media_label}) failed: {e}")
 
-    # Top 10 Today
-    for media_label, media_type, slot in [
-        ("movies", "movie", "top10-movie"),
-        ("shows", "tv", "top10-series"),
-    ]:
-        try:
-            data = (
-                await tmdb_client.get_trending_movies()
-                if media_type == "movie"
-                else await tmdb_client.get_trending_tv_shows()
+    # New Releases — last 90 days, sorted by popularity
+    try:
+        cutoff_date = (datetime.utcnow() - timedelta(days=90)).strftime("%Y-%m-%d")
+        new_releases = (
+            db.query(MediaMetadata.tmdb_id)
+            .filter(
+                MediaMetadata.release_date >= cutoff_date,
+                MediaMetadata.release_date.isnot(None),
             )
-            tmdb_ids = [r["id"] for r in data.get("results", [])[:10] if r.get("id")]
-            if tmdb_ids:
-                catalog_gen.save_user_catalog(
-                    user_id=user.id,
-                    slot_id=slot,
-                    name="Top 10 Today",
-                    media_type=media_type,
-                    tmdb_ids=tmdb_ids,
-                    generation_method="tmdb_top10_daily",
-                )
-                catalogs_created += 1
-                logger.info(f"  Top 10 ({media_label}): {len(tmdb_ids)} items")
-        except Exception as e:
-            logger.warning(f"  Top 10 ({media_label}) failed: {e}")
-
-    # Popular
-    for media_label, media_type, slot in [
-        ("movies", "movie", "popular-movie"),
-        ("shows", "tv", "popular-series"),
-    ]:
-        try:
-            data = (
-                await tmdb_client.get_popular_movies()
-                if media_type == "movie"
-                else await tmdb_client.get_popular_tv_shows()
+            .order_by(MediaMetadata.popularity.desc())
+            .limit(100)
+            .all()
+        )
+        tmdb_ids = [r.tmdb_id for r in new_releases]
+        if tmdb_ids:
+            catalog_gen.save_user_catalog(
+                user_id=user.id,
+                slot_id="new-releases",
+                name="New Releases",
+                media_type="movie",
+                tmdb_ids=tmdb_ids,
+                generation_method="new_releases",
             )
-            tmdb_ids = [r["id"] for r in data.get("results", []) if r.get("id")]
-            if tmdb_ids:
-                catalog_gen.save_user_catalog(
-                    user_id=user.id,
-                    slot_id=slot,
-                    name="Popular",
-                    media_type=media_type,
-                    tmdb_ids=tmdb_ids,
-                    generation_method="tmdb_popular",
-                )
-                catalogs_created += 1
-                logger.info(f"  Popular ({media_label}): {len(tmdb_ids)} items")
-        except Exception as e:
-            logger.warning(f"  Popular ({media_label}) failed: {e}")
+            catalogs_created += 1
+            logger.info(f"  New Releases: {len(tmdb_ids)} items")
+    except Exception as e:
+        logger.warning(f"  New Releases failed: {e}")
 
     # Backfill metadata
     user_catalog_ids = [
@@ -1030,34 +1003,6 @@ async def _generate_discovery_catalogs(
             logger.info(f"  Critically Acclaimed: {len(tmdb_ids)} items")
     except Exception as e:
         logger.warning(f"  Critically Acclaimed failed: {e}")
-
-    # "New Releases" — last 90 days, sorted by popularity
-    try:
-        cutoff_date = (datetime.utcnow() - timedelta(days=90)).strftime("%Y-%m-%d")
-        new_releases = (
-            db.query(MediaMetadata.tmdb_id)
-            .filter(
-                MediaMetadata.release_date >= cutoff_date,
-                MediaMetadata.release_date.isnot(None),
-            )
-            .order_by(MediaMetadata.popularity.desc())
-            .limit(100)
-            .all()
-        )
-        tmdb_ids = [r.tmdb_id for r in new_releases]
-        if tmdb_ids:
-            catalog_gen.save_user_catalog(
-                user_id=user.id,
-                slot_id="discover-new",
-                name="New Releases",
-                media_type="movie",
-                tmdb_ids=tmdb_ids,
-                generation_method="discovery_new_releases",
-            )
-            catalogs_created += 1
-            logger.info(f"  New Releases: {len(tmdb_ids)} items")
-    except Exception as e:
-        logger.warning(f"  New Releases failed: {e}")
 
     logger.info(f"  Generated {catalogs_created} discovery catalogs for {display}")
     return catalogs_created
