@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     # Content Filters (global defaults — users can override per-account)
     hide_foreign: bool = Field(False, description="Hide non-English content by default")
     hide_adult: bool = Field(False, description="Hide explicit/18+ content by default")
+    hide_unreleased: bool = Field(
+        False,
+        description="Hide movies not yet available digitally (unreleased or in theaters)",
+    )
 
     # Performance
     workers: int = Field(4, description="Number of Uvicorn workers")

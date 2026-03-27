@@ -382,6 +382,7 @@ async def get_settings(request: Request, _=Depends(verify_admin)):
             "ENABLE_TRAKT_SYNC": val("ENABLE_TRAKT_SYNC").lower() in ("true", "1"),
             "HIDE_FOREIGN": val("HIDE_FOREIGN").lower() in ("true", "1"),
             "HIDE_ADULT": val("HIDE_ADULT").lower() in ("true", "1"),
+            "HIDE_UNRELEASED": val("HIDE_UNRELEASED").lower() in ("true", "1"),
         },
         "schedule": {
             "DAILY_UPDATE_ENABLED": val("DAILY_UPDATE_ENABLED").lower()
@@ -413,6 +414,7 @@ async def update_settings(request: Request, _=Depends(verify_admin)):
         "ENABLE_TRAKT_SYNC",
         "HIDE_FOREIGN",
         "HIDE_ADULT",
+        "HIDE_UNRELEASED",
         "DAILY_UPDATE_ENABLED",
         "DAILY_UPDATE_TIME",
     }
@@ -1890,6 +1892,12 @@ tr:last-child td{border-bottom:none}
             <span class="toggle-label">Hide Explicit Content (18+)</span>
           </label>
           <div class="hint" style="margin-top:-12px">Filter out adult-rated titles from all catalogs.</div>
+          <label class="toggle">
+            <input type="checkbox" id="set-HIDE_UNRELEASED">
+            <span class="toggle-track"></span>
+            <span class="toggle-label">Hide Unreleased / In Theaters</span>
+          </label>
+          <div class="hint" style="margin-top:-12px">Filter out movies not yet available digitally (unreleased or still in theatrical window).</div>
         </div>
       </div>
 
@@ -2229,6 +2237,7 @@ async function loadSettings() {
     // Content Filters
     document.getElementById('set-HIDE_FOREIGN').checked = s.features.HIDE_FOREIGN;
     document.getElementById('set-HIDE_ADULT').checked = s.features.HIDE_ADULT;
+    document.getElementById('set-HIDE_UNRELEASED').checked = s.features.HIDE_UNRELEASED;
 
     // Schedule
     document.getElementById('schedule-enabled').checked = s.schedule.DAILY_UPDATE_ENABLED;
@@ -2260,6 +2269,7 @@ async function saveSettings() {
   data.ENABLE_TRAKT_SYNC = document.getElementById('set-ENABLE_TRAKT_SYNC').checked;
   data.HIDE_FOREIGN = document.getElementById('set-HIDE_FOREIGN').checked;
   data.HIDE_ADULT = document.getElementById('set-HIDE_ADULT').checked;
+  data.HIDE_UNRELEASED = document.getElementById('set-HIDE_UNRELEASED').checked;
 
   try {
     const res = await api('POST', '/admin/api/settings', data);

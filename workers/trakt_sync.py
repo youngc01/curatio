@@ -6,11 +6,12 @@ Flow: Trakt tells us WHAT they watched → tag DB powers the recommendations.
 
 Generates Netflix/Prime/HBO-style catalog rows:
   1. "Up Next"                         (series watched in last 2 weeks)
-  2. "Because You Watched [Title]" x5  (tag-based similarity)
-  3. "Recommended For You"             (tag-based taste profile)
-  4. "Top 10 Today"                    (daily most-watched, ranked 1-10)
-  5. "Trending Now"                    (Trakt community)
-  6. "Popular"                         (Trakt all-time favorites)
+  2. "Trending Now"                    (TMDB daily trending)
+  3. "New Releases"                    (last 90 days by popularity)
+  4. "Because You Watched [Title]" x5  (tag-based similarity)
+  5. "Top Picks / Recommended For You" (tag-based taste profile)
+  6. "Genre/Mood For You" x4           (taste-specific catalogs)
+  7. "Hidden Gems For You"             (high-quality low-popularity)
 
 Only digitally-released content — no anticipated/unreleased titles.
 """
@@ -29,7 +30,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.models import User, MovieTag, MediaMetadata, WatchEvent  # noqa: E402
+from app.models import User, MovieTag, MediaMetadata, WatchEvent, Tag  # noqa: E402
+from app.models import UniversalCategory, UniversalCatalogContent  # noqa: E402
 from app.trakt_client import trakt_client  # noqa: E402
 from app.tmdb_client import tmdb_client  # noqa: E402
 from app.catalog_generator import CatalogGenerator  # noqa: E402
@@ -39,19 +41,28 @@ from app.catalog_generator import CatalogGenerator  # noqa: E402
 # ---------------------------------------------------------------------------
 SLOT_ORDER = {
     "up-next": 0,
-    "byw-1": 1,
-    "byw-2": 2,
-    "byw-3": 3,
-    "byw-4": 4,
-    "byw-5": 5,
-    "rec-movie": 6,
-    "rec-series": 7,
-    "top10-movie": 8,
-    "top10-series": 9,
-    "trakt-trending-movie": 10,
-    "trakt-trending-series": 11,
-    "popular-movie": 12,
-    "popular-series": 13,
+    "trending-movie": 1,
+    "trending-series": 2,
+    "new-releases": 3,
+    "byw-1": 4,
+    "byw-2": 5,
+    "byw-3": 6,
+    "byw-4": 7,
+    "byw-5": 8,
+    "picks-movie": 9,
+    "picks-series": 10,
+    "rec-movie": 11,
+    "rec-series": 12,
+    "taste-0": 13,
+    "taste-1": 14,
+    "taste-2": 15,
+    "taste-3": 16,
+    "gems-movie": 17,
+    "gems-series": 18,
+    # Discovery catalogs for users with no history
+    "discover-movie": 2,
+    "discover-series": 3,
+    "discover-acclaimed": 4,
 }
 
 
@@ -609,7 +620,7 @@ def _pick_byw_seeds_local(
     all_watched_ids: Set[int],
     max_seeds: int = 5,
 ) -> List[Dict]:
-    """Pick BYW seed items from local watch events (most recent completions)."""
+    """Pick BYW seed items from local watch events (completions + imports)."""
 
     recent = (
         db.query(
@@ -620,7 +631,7 @@ def _pick_byw_seeds_local(
         )
         .filter(
             WatchEvent.user_id == user_id,
-            WatchEvent.action == "complete",
+            WatchEvent.action.in_(["complete", "imported"]),
         )
         .group_by(WatchEvent.tmdb_id, WatchEvent.media_type, WatchEvent.title)
         .order_by(func.max(WatchEvent.created_at).desc())
@@ -675,6 +686,328 @@ def _pick_byw_seeds_local(
     return seeds
 
 
+def _find_hidden_gems_by_taste(
+    db: Session,
+    taste_tag_ids: List[int],
+    media_type: str,
+    exclude_ids: Set[int],
+    limit: int = 100,
+) -> List[int]:
+    """Find high-quality, low-popularity items matching the user's taste."""
+    if not taste_tag_ids:
+        return []
+
+    results = (
+        db.query(
+            MovieTag.tmdb_id,
+            func.count(func.distinct(MovieTag.tag_id)).label("tag_hits"),
+            func.avg(MovieTag.confidence).label("avg_conf"),
+        )
+        .join(
+            MediaMetadata,
+            (MovieTag.tmdb_id == MediaMetadata.tmdb_id)
+            & (MovieTag.media_type == MediaMetadata.media_type),
+        )
+        .filter(
+            MovieTag.tag_id.in_(taste_tag_ids),
+            MovieTag.media_type == media_type,
+            MediaMetadata.vote_average >= 7.0,
+            MediaMetadata.vote_count >= 100,
+            MediaMetadata.popularity < 30,
+        )
+        .group_by(MovieTag.tmdb_id)
+        .order_by(
+            func.count(func.distinct(MovieTag.tag_id)).desc(),
+            func.avg(MovieTag.confidence).desc(),
+        )
+        .limit(limit + len(exclude_ids))
+        .all()
+    )
+
+    return [r.tmdb_id for r in results if r.tmdb_id not in exclude_ids][:limit]
+
+
+def _find_genre_taste_catalogs(
+    db: Session,
+    all_watched_ids: Set[int],
+    taste_tag_ids: List[int],
+    exclude_ids: Set[int],
+    max_catalogs: int = 4,
+    limit: int = 100,
+) -> List[Dict]:
+    """Generate genre/mood-specific taste catalogs.
+
+    Returns a list of dicts with keys: slot_id, name, media_type, tmdb_ids.
+    """
+    if not taste_tag_ids or not all_watched_ids:
+        return []
+
+    # Find user's top genre and mood tags from their watched items
+    top_tags = (
+        db.query(
+            Tag.id,
+            Tag.name,
+            Tag.category,
+            func.count().label("cnt"),
+        )
+        .join(MovieTag, MovieTag.tag_id == Tag.id)
+        .filter(
+            MovieTag.tmdb_id.in_(all_watched_ids),
+            Tag.category.in_(["genre", "mood"]),
+        )
+        .group_by(Tag.id, Tag.name, Tag.category)
+        .order_by(func.count().desc())
+        .limit(10)
+        .all()
+    )
+
+    # Pick top 2 genre + top 2 mood tags
+    genres = [t for t in top_tags if t.category == "genre"][:2]
+    moods = [t for t in top_tags if t.category == "mood"][:2]
+    selected = genres + moods
+
+    catalogs: List[Dict] = []
+    taste_set = set(taste_tag_ids)
+
+    for i, tag_row in enumerate(selected[:max_catalogs]):
+        # Find items with this specific tag + at least 1 other taste tag
+        results = (
+            db.query(
+                MovieTag.tmdb_id,
+                MovieTag.media_type,
+                func.count(func.distinct(MovieTag.tag_id)).label("tag_hits"),
+                func.avg(MovieTag.confidence).label("avg_conf"),
+            )
+            .filter(
+                MovieTag.tag_id.in_(taste_set | {tag_row.id}),
+                MovieTag.tmdb_id.notin_(exclude_ids),
+            )
+            .group_by(MovieTag.tmdb_id, MovieTag.media_type)
+            .having(func.count(func.distinct(MovieTag.tag_id)) >= 2)
+            .order_by(
+                func.count(func.distinct(MovieTag.tag_id)).desc(),
+                func.avg(MovieTag.confidence).desc(),
+            )
+            .limit(limit)
+            .all()
+        )
+
+        if not results:
+            continue
+
+        # Determine dominant media type from results
+        movie_count = sum(1 for r in results if r.media_type == "movie")
+        tv_count = sum(1 for r in results if r.media_type == "tv")
+        media_type = "movie" if movie_count >= tv_count else "tv"
+
+        tmdb_ids = [r.tmdb_id for r in results if r.media_type == media_type]
+        if not tmdb_ids:
+            tmdb_ids = [r.tmdb_id for r in results][:limit]
+
+        catalogs.append(
+            {
+                "slot_id": f"taste-{i}",
+                "name": f"{tag_row.name} For You",
+                "media_type": media_type,
+                "tmdb_ids": tmdb_ids[:limit],
+            }
+        )
+
+    return catalogs
+
+
+async def _generate_common_catalogs(
+    user: User,
+    db: Session,
+    catalog_gen: CatalogGenerator,
+    catalogs_created: int,
+    display: str,
+) -> int:
+    """Generate trending + new releases catalogs + backfill metadata.
+
+    Shared by both the with-history and no-history paths.
+    """
+    from app.models import UserCatalog, UserCatalogContent
+
+    # Trending Now (movies & series)
+    for media_label, media_type, slot in [
+        ("movies", "movie", "trending-movie"),
+        ("shows", "tv", "trending-series"),
+    ]:
+        try:
+            data = (
+                await tmdb_client.get_trending_movies()
+                if media_type == "movie"
+                else await tmdb_client.get_trending_tv_shows()
+            )
+            tmdb_ids = [r["id"] for r in data.get("results", []) if r.get("id")]
+            if tmdb_ids:
+                catalog_gen.save_user_catalog(
+                    user_id=user.id,
+                    slot_id=slot,
+                    name="Trending Now",
+                    media_type=media_type,
+                    tmdb_ids=tmdb_ids,
+                    generation_method="tmdb_trending",
+                )
+                catalogs_created += 1
+                logger.info(f"  Trending ({media_label}): {len(tmdb_ids)} items")
+        except Exception as e:
+            logger.warning(f"  Trending ({media_label}) failed: {e}")
+
+    # New Releases — last 90 days, sorted by popularity
+    try:
+        cutoff_date = (datetime.utcnow() - timedelta(days=90)).strftime("%Y-%m-%d")
+        new_releases = (
+            db.query(MediaMetadata.tmdb_id)
+            .filter(
+                MediaMetadata.release_date >= cutoff_date,
+                MediaMetadata.release_date.isnot(None),
+            )
+            .order_by(MediaMetadata.popularity.desc())
+            .limit(100)
+            .all()
+        )
+        tmdb_ids = [r.tmdb_id for r in new_releases]
+        if tmdb_ids:
+            catalog_gen.save_user_catalog(
+                user_id=user.id,
+                slot_id="new-releases",
+                name="New Releases",
+                media_type="movie",
+                tmdb_ids=tmdb_ids,
+                generation_method="new_releases",
+            )
+            catalogs_created += 1
+            logger.info(f"  New Releases: {len(tmdb_ids)} items")
+    except Exception as e:
+        logger.warning(f"  New Releases failed: {e}")
+
+    # Backfill metadata
+    user_catalog_ids = [
+        c.id
+        for c in db.query(UserCatalog.id).filter(UserCatalog.user_id == user.id).all()
+    ]
+    if user_catalog_ids:
+        rows = (
+            db.query(UserCatalogContent.tmdb_id, UserCatalogContent.media_type)
+            .filter(UserCatalogContent.catalog_id.in_(user_catalog_ids))
+            .distinct()
+            .all()
+        )
+        ids_by_type: Dict[str, Set[int]] = {"movie": set(), "tv": set()}
+        for r in rows:
+            ids_by_type.setdefault(r.media_type, set()).add(r.tmdb_id)
+        try:
+            await _backfill_metadata(db, ids_by_type)
+        except Exception as e:
+            logger.warning(f"Metadata backfill had errors: {e}")
+
+    user.last_sync = datetime.utcnow()
+    db.commit()
+
+    logger.info(
+        f"Local sync complete for {display}: {catalogs_created} catalogs generated"
+    )
+    return catalogs_created
+
+
+async def _generate_discovery_catalogs(
+    user: User,
+    db: Session,
+    catalog_gen: CatalogGenerator,
+    display: str,
+) -> int:
+    """Generate discovery catalogs for users with no watch history.
+
+    Creates daily-rotating catalogs from universal content + quality picks.
+    """
+    import hashlib
+    import random as _random
+    from datetime import date
+
+    catalogs_created = 0
+    daily_seed = int(hashlib.md5(date.today().isoformat().encode()).hexdigest()[:8], 16)
+
+    # "Discover Today" — sample from random universal categories, rotated daily
+    for media_type, slot in [("movie", "discover-movie"), ("tv", "discover-series")]:
+        try:
+            categories = (
+                db.query(UniversalCategory.id)
+                .filter(
+                    UniversalCategory.is_active.is_(True),
+                    UniversalCategory.media_type == media_type,
+                )
+                .all()
+            )
+            cat_ids = [c.id for c in categories]
+            if cat_ids:
+                rng = _random.Random(daily_seed + hash(media_type))
+                picked = rng.sample(cat_ids, min(5, len(cat_ids)))
+                tmdb_ids_set: set[int] = set()
+                for cid in picked:
+                    rows = (
+                        db.query(UniversalCatalogContent.tmdb_id)
+                        .filter(UniversalCatalogContent.category_id == cid)
+                        .order_by(UniversalCatalogContent.rank)
+                        .limit(40)
+                        .all()
+                    )
+                    tmdb_ids_set.update(r.tmdb_id for r in rows)
+
+                tmdb_ids = list(tmdb_ids_set)
+                rng.shuffle(tmdb_ids)
+                tmdb_ids = tmdb_ids[:100]
+
+                if tmdb_ids:
+                    catalog_gen.save_user_catalog(
+                        user_id=user.id,
+                        slot_id=slot,
+                        name="Discover Today",
+                        media_type=media_type,
+                        tmdb_ids=tmdb_ids,
+                        generation_method="discovery_daily",
+                    )
+                    catalogs_created += 1
+                    logger.info(
+                        f"  Discover Today ({media_type}): {len(tmdb_ids)} items"
+                    )
+        except Exception as e:
+            logger.warning(f"  Discover Today ({media_type}) failed: {e}")
+
+    # "Critically Acclaimed" — high-rated, shuffled daily
+    try:
+        acclaimed = (
+            db.query(MediaMetadata.tmdb_id)
+            .filter(
+                MediaMetadata.vote_average >= 7.5,
+                MediaMetadata.vote_count >= 1000,
+            )
+            .order_by(MediaMetadata.vote_average.desc())
+            .limit(200)
+            .all()
+        )
+        tmdb_ids = [r.tmdb_id for r in acclaimed]
+        _random.Random(daily_seed).shuffle(tmdb_ids)
+        tmdb_ids = tmdb_ids[:100]
+        if tmdb_ids:
+            catalog_gen.save_user_catalog(
+                user_id=user.id,
+                slot_id="discover-acclaimed",
+                name="Critically Acclaimed",
+                media_type="movie",
+                tmdb_ids=tmdb_ids,
+                generation_method="discovery_acclaimed",
+            )
+            catalogs_created += 1
+            logger.info(f"  Critically Acclaimed: {len(tmdb_ids)} items")
+    except Exception as e:
+        logger.warning(f"  Critically Acclaimed failed: {e}")
+
+    logger.info(f"  Generated {catalogs_created} discovery catalogs for {display}")
+    return catalogs_created
+
+
 async def sync_local_user_catalogs(user: User, db: Session) -> int:
     """Build personalized catalogs from local watch events (no Trakt).
 
@@ -702,11 +1035,40 @@ async def sync_local_user_catalogs(user: User, db: Session) -> int:
     }
     watched_show_ids: Set[int] = {r.tmdb_id for r in completed if r.media_type == "tv"}
 
+    # Include imported history for recommendation building (not for Up Next)
+    imported = (
+        db.query(WatchEvent.tmdb_id, WatchEvent.media_type)
+        .filter(WatchEvent.user_id == user.id, WatchEvent.action == "imported")
+        .distinct()
+        .all()
+    )
+    all_movie_ids: Set[int] = watched_movie_ids | {
+        r.tmdb_id for r in imported if r.media_type == "movie"
+    }
+    all_show_ids: Set[int] = watched_show_ids | {
+        r.tmdb_id for r in imported if r.media_type == "tv"
+    }
+
     logger.info(
         f"User {display}: "
-        f"{len(watched_movie_ids)} watched movies, "
-        f"{len(watched_show_ids)} watched shows (local)"
+        f"{len(all_movie_ids)} movies ({len(watched_movie_ids)} watched + "
+        f"{len(all_movie_ids) - len(watched_movie_ids)} imported), "
+        f"{len(all_show_ids)} shows ({len(watched_show_ids)} watched + "
+        f"{len(all_show_ids) - len(watched_show_ids)} imported)"
     )
+
+    has_history = bool(all_movie_ids or all_show_ids)
+
+    if not has_history:
+        # No watch history at all — generate discovery catalogs instead
+        catalogs_created = await _generate_discovery_catalogs(
+            user, db, catalog_gen, display
+        )
+        # Still generate trending/popular/top10 below — skip to Step 5
+        # (fall through to the trending/popular/top10 section at the end)
+        return await _generate_common_catalogs(
+            user, db, catalog_gen, catalogs_created, display
+        )
 
     # ------------------------------------------------------------------
     # Step 2: "Up Next" — TV shows with recent completions (last 14 days)
@@ -749,13 +1111,11 @@ async def sync_local_user_catalogs(user: User, db: Session) -> int:
     # Step 3: "Because You Watched [Title]" — tag-based similarity
     # ------------------------------------------------------------------
     byw_seeds = _pick_byw_seeds_local(
-        db, user.id, watched_movie_ids | watched_show_ids, max_seeds=5
+        db, user.id, all_movie_ids | all_show_ids, max_seeds=5
     )
 
     for i, seed in enumerate(byw_seeds):
-        exclude = (
-            watched_movie_ids if seed["media_type"] == "movie" else watched_show_ids
-        )
+        exclude = all_movie_ids if seed["media_type"] == "movie" else all_show_ids
         similar_ids = find_similar_by_tags(
             db,
             reference_tmdb_id=seed["tmdb_id"],
@@ -784,8 +1144,8 @@ async def sync_local_user_catalogs(user: User, db: Session) -> int:
     # Step 4: "Recommended For You" — tag-based taste profile
     # ------------------------------------------------------------------
     for media_label, watched_ids, media_type, slot in [
-        ("movies", watched_movie_ids, "movie", "rec-movie"),
-        ("shows", watched_show_ids, "tv", "rec-series"),
+        ("movies", all_movie_ids, "movie", "rec-movie"),
+        ("shows", all_show_ids, "tv", "rec-series"),
     ]:
         try:
             tmdb_ids = find_recommendations_by_taste(
@@ -809,123 +1169,107 @@ async def sync_local_user_catalogs(user: User, db: Session) -> int:
             logger.warning(f"  Tag recs ({media_label}) failed: {e}")
 
     # ------------------------------------------------------------------
-    # Step 5: "Trending Now" — from TMDB (no Trakt needed)
+    # Step 4a: "Top Picks For You" — best taste matches (broader tags)
     # ------------------------------------------------------------------
-    for media_label, media_type, slot in [
-        ("movies", "movie", "trakt-trending-movie"),
-        ("shows", "tv", "trakt-trending-series"),
+    for media_label, watched_ids, media_type, slot in [
+        ("movies", all_movie_ids, "movie", "picks-movie"),
+        ("shows", all_show_ids, "tv", "picks-series"),
     ]:
         try:
-            data = (
-                await tmdb_client.get_trending_movies()
-                if media_type == "movie"
-                else await tmdb_client.get_trending_tv_shows()
+            tmdb_ids = find_recommendations_by_taste(
+                db,
+                watched_tmdb_ids=watched_ids,
+                media_type=media_type,
+                top_n_tags=20,
+                limit=100,
             )
-            tmdb_ids = [r["id"] for r in data.get("results", []) if r.get("id")]
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
                     user_id=user.id,
                     slot_id=slot,
-                    name="Trending Now",
+                    name="Top Picks For You",
                     media_type=media_type,
                     tmdb_ids=tmdb_ids,
-                    generation_method="tmdb_trending",
+                    generation_method="top_picks",
                 )
                 catalogs_created += 1
-                logger.info(f"  Trending ({media_label}): {len(tmdb_ids)} items")
+                logger.info(f"  Top Picks ({media_label}): {len(tmdb_ids)} items")
         except Exception as e:
-            logger.warning(f"  Trending ({media_label}) failed: {e}")
+            logger.warning(f"  Top Picks ({media_label}) failed: {e}")
 
     # ------------------------------------------------------------------
-    # Step 6: "Top 10 Today" — TMDB trending day (first 10)
+    # Step 4b: Genre/mood taste catalogs — "Sci-Fi For You", etc.
     # ------------------------------------------------------------------
-    for media_label, media_type, slot in [
-        ("movies", "movie", "top10-movie"),
-        ("shows", "tv", "top10-series"),
-    ]:
-        try:
-            data = (
-                await tmdb_client.get_trending_movies()
-                if media_type == "movie"
-                else await tmdb_client.get_trending_tv_shows()
-            )
-            tmdb_ids = [r["id"] for r in data.get("results", [])[:10] if r.get("id")]
-            if tmdb_ids:
-                catalog_gen.save_user_catalog(
-                    user_id=user.id,
-                    slot_id=slot,
-                    name="Top 10 Today",
-                    media_type=media_type,
-                    tmdb_ids=tmdb_ids,
-                    generation_method="tmdb_top10_daily",
-                )
-                catalogs_created += 1
-                logger.info(f"  Top 10 ({media_label}): {len(tmdb_ids)} items")
-        except Exception as e:
-            logger.warning(f"  Top 10 ({media_label}) failed: {e}")
+    taste_tag_ids = build_taste_profile(
+        db, list(all_movie_ids | all_show_ids), "movie", top_n_tags=15
+    ) + build_taste_profile(db, list(all_movie_ids | all_show_ids), "tv", top_n_tags=15)
+    # Deduplicate while preserving order
+    seen_tags: set[int] = set()
+    unique_taste_tags: list[int] = []
+    for tid in taste_tag_ids:
+        if tid not in seen_tags:
+            seen_tags.add(tid)
+            unique_taste_tags.append(tid)
+    taste_tag_ids = unique_taste_tags
 
-    # ------------------------------------------------------------------
-    # Step 7: "Popular" — TMDB popular endpoint
-    # ------------------------------------------------------------------
-    for media_label, media_type, slot in [
-        ("movies", "movie", "popular-movie"),
-        ("shows", "tv", "popular-series"),
-    ]:
-        try:
-            data = (
-                await tmdb_client.get_popular_movies()
-                if media_type == "movie"
-                else await tmdb_client.get_popular_tv_shows()
-            )
-            tmdb_ids = [r["id"] for r in data.get("results", []) if r.get("id")]
-            if tmdb_ids:
-                catalog_gen.save_user_catalog(
-                    user_id=user.id,
-                    slot_id=slot,
-                    name="Popular",
-                    media_type=media_type,
-                    tmdb_ids=tmdb_ids,
-                    generation_method="tmdb_popular",
-                )
-                catalogs_created += 1
-                logger.info(f"  Popular ({media_label}): {len(tmdb_ids)} items")
-        except Exception as e:
-            logger.warning(f"  Popular ({media_label}) failed: {e}")
-
-    # ------------------------------------------------------------------
-    # Backfill metadata for TMDB IDs not yet in MediaMetadata
-    # ------------------------------------------------------------------
-    from app.models import UserCatalog, UserCatalogContent
-
-    user_catalog_ids = [
-        c.id
-        for c in db.query(UserCatalog.id).filter(UserCatalog.user_id == user.id).all()
-    ]
-    if user_catalog_ids:
-        rows = (
-            db.query(UserCatalogContent.tmdb_id, UserCatalogContent.media_type)
-            .filter(UserCatalogContent.catalog_id.in_(user_catalog_ids))
-            .distinct()
-            .all()
+    try:
+        taste_catalogs = _find_genre_taste_catalogs(
+            db,
+            all_watched_ids=all_movie_ids | all_show_ids,
+            taste_tag_ids=taste_tag_ids,
+            exclude_ids=all_movie_ids | all_show_ids,
+            max_catalogs=4,
+            limit=100,
         )
-        ids_by_type: Dict[str, Set[int]] = {"movie": set(), "tv": set()}
-        for r in rows:
-            ids_by_type.setdefault(r.media_type, set()).add(r.tmdb_id)
+        for tc in taste_catalogs:
+            catalog_gen.save_user_catalog(
+                user_id=user.id,
+                slot_id=tc["slot_id"],
+                name=tc["name"],
+                media_type=tc["media_type"],
+                tmdb_ids=tc["tmdb_ids"],
+                generation_method="taste_genre",
+            )
+            catalogs_created += 1
+            logger.info(f"  Taste '{tc['name']}': {len(tc['tmdb_ids'])} items")
+    except Exception as e:
+        logger.warning(f"  Taste catalogs failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Step 4c: "Hidden Gems For You" — high quality, low popularity
+    # ------------------------------------------------------------------
+    for media_label, media_type, slot in [
+        ("movies", "movie", "gems-movie"),
+        ("shows", "tv", "gems-series"),
+    ]:
         try:
-            await _backfill_metadata(db, ids_by_type)
+            tmdb_ids = _find_hidden_gems_by_taste(
+                db,
+                taste_tag_ids=taste_tag_ids,
+                media_type=media_type,
+                exclude_ids=all_movie_ids | all_show_ids,
+                limit=100,
+            )
+            if tmdb_ids:
+                catalog_gen.save_user_catalog(
+                    user_id=user.id,
+                    slot_id=slot,
+                    name="Hidden Gems For You",
+                    media_type=media_type,
+                    tmdb_ids=tmdb_ids,
+                    generation_method="hidden_gems",
+                )
+                catalogs_created += 1
+                logger.info(f"  Hidden Gems ({media_label}): {len(tmdb_ids)} items")
         except Exception as e:
-            logger.warning(f"Metadata backfill had errors: {e}")
+            logger.warning(f"  Hidden Gems ({media_label}) failed: {e}")
 
     # ------------------------------------------------------------------
-    # Done
+    # Steps 5-7: Trending/Top10/Popular + backfill + commit
     # ------------------------------------------------------------------
-    user.last_sync = datetime.utcnow()
-    db.commit()
-
-    logger.info(
-        f"Local sync complete for {display}: " f"{catalogs_created} catalogs generated"
+    return await _generate_common_catalogs(
+        user, db, catalog_gen, catalogs_created, display
     )
-    return catalogs_created
 
 
 # ---------------------------------------------------------------------------
