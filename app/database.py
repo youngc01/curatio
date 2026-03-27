@@ -249,6 +249,8 @@ def _add_missing_columns():
             ("users", "totp_secret", "TEXT"),
             ("users", "totp_enabled", "BOOLEAN DEFAULT FALSE NOT NULL"),
             ("users", "bandwidth_tier", "VARCHAR(10) DEFAULT 'high' NOT NULL"),
+            ("users", "is_admin", "BOOLEAN DEFAULT FALSE NOT NULL"),
+            ("admin_sessions", "user_id", "INTEGER"),
         ]
         for table, column, col_type in v2_user_migrations:
             try:

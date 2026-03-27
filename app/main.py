@@ -41,6 +41,7 @@ from app.models import (
     MediaMetadata,
     WatchEvent,
     Tag,
+    WatchProgress,
 )
 from app.catalog_generator import CatalogGenerator
 from app.trakt_client import trakt_client
@@ -68,7 +69,7 @@ from app.auth import (
     claim_device_pairing_session,
     poll_device_pairing_session,
 )
-from app.stream_proxy import get_streams
+from app.stream_proxy import get_streams, record_stream_activity
 from app.models import UserSession
 
 # ---- Manifest cache (avoids DB query on every manifest request) ----
@@ -1773,6 +1774,116 @@ async def import_history(request: Request):
     return {"status": "ok", "imported": added, "skipped": len(tmdb_ids) - added}
 
 
+# ---------------------------------------------------------------------------
+# Watch progress / history endpoints (cross-device Continue Watching)
+# ---------------------------------------------------------------------------
+
+
+class ProgressRequest(BaseModel):
+    """Payload sent by the client to report playback position."""
+
+    tmdb_id: int
+    media_type: Literal["movie", "tv"]
+    position: int  # seconds into playback
+    duration: int  # total runtime in seconds
+    season: Optional[int] = None
+    episode: Optional[int] = None
+    title: Optional[str] = None
+
+
+@app.post("/{user_key}/progress")
+async def report_progress(user_key: str, payload: ProgressRequest):
+    """Record or update playback progress for Continue Watching.
+
+    Upserts: one row per (user, tmdb_id, media_type, season, episode).
+    If position >= 90 % of duration the row is deleted (item is finished).
+    """
+    with get_db() as db:
+        user = db.query(User).filter(User.user_key == user_key).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Not found")
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="User is inactive")
+
+        # Build filter for this exact item
+        filters = [
+            WatchProgress.user_id == user.id,
+            WatchProgress.tmdb_id == payload.tmdb_id,
+            WatchProgress.media_type == payload.media_type,
+        ]
+        if payload.media_type == "tv":
+            filters.append(WatchProgress.season == payload.season)
+            filters.append(WatchProgress.episode == payload.episode)
+
+        existing = db.query(WatchProgress).filter(*filters).first()
+
+        # If >=90% watched, treat as finished — remove the progress row
+        if payload.duration > 0 and payload.position / payload.duration >= 0.9:
+            if existing:
+                db.delete(existing)
+            return {"status": "ok", "completed": True}
+
+        if existing:
+            existing.position = payload.position
+            existing.duration = payload.duration
+            existing.title = payload.title or existing.title
+            existing.updated_at = datetime.utcnow()
+        else:
+            db.add(
+                WatchProgress(
+                    user_id=user.id,
+                    tmdb_id=payload.tmdb_id,
+                    media_type=payload.media_type,
+                    season=payload.season,
+                    episode=payload.episode,
+                    position=payload.position,
+                    duration=payload.duration,
+                    title=payload.title,
+                )
+            )
+
+    return {"status": "ok"}
+
+
+@app.get("/{user_key}/history")
+async def watch_history(user_key: str, limit: int = Query(50, ge=1, le=200)):
+    """Return recent watch progress for Continue Watching.
+
+    Items are sorted by most-recently-updated first.  Only items that
+    are still in progress (< 90 % watched) are returned — finished items
+    are automatically cleaned up by the progress endpoint.
+    """
+    with get_db() as db:
+        user = db.query(User).filter(User.user_key == user_key).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Not found")
+
+        rows = (
+            db.query(WatchProgress)
+            .filter(WatchProgress.user_id == user.id)
+            .order_by(WatchProgress.updated_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+        items = []
+        for r in rows:
+            item = {
+                "tmdb_id": r.tmdb_id,
+                "media_type": r.media_type,
+                "title": r.title,
+                "position": r.position,
+                "duration": r.duration,
+                "updated_at": r.updated_at.isoformat() + "Z" if r.updated_at else None,
+            }
+            if r.media_type == "tv":
+                item["season"] = r.season
+                item["episode"] = r.episode
+            items.append(item)
+
+    return {"items": items}
+
+
 @app.get("/auth/verify-invite")
 async def verify_invite(
     invite: str = Query(..., description="Invite code to verify"),
@@ -2018,6 +2129,35 @@ async def stream_handler(
 
     tier = getattr(user, "bandwidth_tier", "high") or "high"
     streams = await get_streams(video_id, stremio_type, tier, db)
+
+    # Record stream activity for the admin dashboard
+    title = None
+    if video_id.startswith("tt"):
+        imdb_base = video_id.split(":")[0]
+        meta = (
+            db.query(MediaMetadata).filter(MediaMetadata.imdb_id == imdb_base).first()
+        )
+        if meta:
+            title = meta.title
+    elif video_id.startswith("tmdb:"):
+        parts = video_id.split(":")
+        tmdb_id = int(parts[1])
+        mt = "tv" if len(parts) > 2 else "movie"
+        meta = (
+            db.query(MediaMetadata)
+            .filter(
+                MediaMetadata.tmdb_id == tmdb_id,
+                MediaMetadata.media_type == mt,
+            )
+            .first()
+        )
+        if meta:
+            title = meta.title
+    username = (
+        user.trakt_username or user.display_name or user.email or f"User #{user.id}"
+    )
+    record_stream_activity(username, user_key, video_id, stremio_type, tier, title)
+
     return JSONResponse(
         content={"streams": streams},
         headers={"Cache-Control": "public, max-age=300"},

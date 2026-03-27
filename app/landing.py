@@ -6,7 +6,7 @@ from app.config import settings
 
 
 def landing_page_html() -> str:
-    """Landing page with install options and Trakt connect."""
+    """Landing page — login-first design with legacy install options."""
     base_url = settings.base_url
 
     return f"""<!DOCTYPE html>
@@ -14,36 +14,40 @@ def landing_page_html() -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Curatio — AI-Curated Cinema for Stremio</title>
+<title>Curatio</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{
   font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,sans-serif;
-  background:#0d0d0d;color:#e5e5e5;min-height:100vh;
-  min-height:100dvh;
+  background:#0d0d0d;color:#e5e5e5;min-height:100vh;min-height:100dvh;
   display:flex;flex-direction:column;align-items:center;
   -webkit-text-size-adjust:100%;
 }}
 .hero{{
-  width:100%;padding:60px 20px 40px;text-align:center;
+  width:100%;padding:48px 20px 24px;text-align:center;
   background:linear-gradient(180deg,#1a1a2e 0%,#0d0d0d 100%);
 }}
-.hero h1{{font-size:2.4rem;font-weight:700;margin-bottom:8px;letter-spacing:2px}}
+.hero h1{{font-size:2rem;font-weight:700;letter-spacing:2px}}
 .hero h1 span{{color:#a855f7}}
-.hero p{{color:#999;font-size:1.1rem;max-width:520px;margin:0 auto;line-height:1.5}}
-.container{{max-width:680px;width:100%;padding:0 20px}}
+.hero p{{color:#666;font-size:.9rem;margin-top:6px}}
+.container{{max-width:440px;width:100%;padding:0 20px}}
 .card{{
   background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;
-  padding:32px;margin-top:28px;
+  padding:32px;margin-top:24px;
 }}
-.card h2{{font-size:1.25rem;margin-bottom:6px}}
-.card .subtitle{{color:#888;font-size:.9rem;margin-bottom:20px;line-height:1.4}}
+.card h2{{font-size:1.15rem;margin-bottom:16px;text-align:center}}
+.input-group{{margin-bottom:14px}}
+.input-group input{{
+  width:100%;padding:13px;background:#111;border:1px solid #333;
+  border-radius:8px;color:#e5e5e5;font-size:16px;outline:none;
+  -webkit-appearance:none;appearance:none;
+}}
+.input-group input:focus{{border-color:#a855f7;box-shadow:0 0 0 3px rgba(168,85,247,.15)}}
 .btn{{
   display:inline-flex;align-items:center;justify-content:center;gap:8px;
-  padding:14px 28px;border-radius:10px;font-size:1rem;font-weight:600;
+  padding:13px 24px;border-radius:10px;font-size:1rem;font-weight:600;
   cursor:pointer;border:none;text-decoration:none;transition:all .2s;
-  width:100%;min-height:48px;
-  -webkit-tap-highlight-color:transparent;
+  width:100%;min-height:46px;-webkit-tap-highlight-color:transparent;
 }}
 .btn:active{{transform:scale(.98);opacity:.9}}
 .btn-primary{{background:#a855f7;color:#fff}}
@@ -53,67 +57,46 @@ body{{
 .btn-trakt{{background:#ed1c24;color:#fff}}
 .btn-trakt:hover{{background:#c8171e}}
 .divider{{
-  display:flex;align-items:center;gap:16px;margin:28px 0;color:#555;font-size:.85rem;
+  display:flex;align-items:center;gap:16px;margin:24px 0;color:#555;font-size:.8rem;
   white-space:nowrap;
 }}
 .divider::before,.divider::after{{content:'';flex:1;border-top:1px solid #333}}
-.input-group{{margin-bottom:16px}}
-.input-group label{{display:block;font-size:.85rem;color:#999;margin-bottom:6px}}
-.input-group input{{
-  width:100%;padding:14px;background:#111;border:1px solid #333;
-  border-radius:8px;color:#e5e5e5;font-size:16px;outline:none;
-  -webkit-appearance:none;appearance:none;
-}}
-.input-group input:focus{{border-color:#a855f7;box-shadow:0 0 0 3px rgba(168,85,247,.15)}}
-.error-msg{{
-  color:#f87171;font-size:.85rem;margin-top:8px;display:none;
-}}
-.features{{
-  display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:28px;
-  margin-bottom:20px;
-}}
-.feature{{
-  background:#1a1a1a;border:1px solid #2a2a2a;border-radius:10px;padding:20px;
-}}
-.feature .icon{{font-size:1.6rem;margin-bottom:8px}}
-.feature h3{{font-size:.95rem;margin-bottom:4px}}
-.feature p{{color:#888;font-size:.8rem;line-height:1.5}}
+.error-msg{{color:#f87171;font-size:.85rem;margin-top:8px;display:none;text-align:center}}
+.success-msg{{color:#4ade80;font-size:.85rem;margin-top:8px;display:none;text-align:center}}
+.links{{text-align:center;margin-top:16px;font-size:.85rem}}
+.links a{{color:#888;text-decoration:none}}
+.links a:hover{{color:#e5e5e5}}
+.links a.purple{{color:#a855f7}}
 .manifest-url{{
   margin-top:16px;padding:12px 14px;background:#111;border:1px solid #333;
-  border-radius:8px;font-family:monospace;font-size:.8rem;color:#888;
-  word-break:break-all;user-select:all;-webkit-user-select:all;
-  overflow-x:auto;
+  border-radius:8px;font-family:monospace;font-size:.75rem;color:#888;
+  word-break:break-all;user-select:all;-webkit-user-select:all;overflow-x:auto;
 }}
+.legacy{{margin-top:0}}
+.legacy summary{{
+  color:#666;font-size:.85rem;cursor:pointer;text-align:center;
+  list-style:none;padding:8px 0;
+}}
+.legacy summary::-webkit-details-marker{{display:none}}
+.legacy summary::before{{content:'';display:none}}
+.legacy-inner{{margin-top:16px}}
 footer{{
   margin-top:auto;padding:32px 20px;text-align:center;
-  color:#555;font-size:.8rem;
+  color:#444;font-size:.75rem;
   padding-bottom:max(32px,env(safe-area-inset-bottom));
 }}
-footer a{{color:#888;text-decoration:none}}
-footer a:hover{{color:#e5e5e5}}
 @media(max-width:600px){{
-  .hero{{padding:40px 16px 28px}}
-  .hero h1{{font-size:1.8rem;letter-spacing:1px}}
-  .hero p{{font-size:.95rem}}
+  .hero{{padding:36px 16px 18px}}
+  .hero h1{{font-size:1.6rem}}
   .container{{padding:0 16px}}
-  .card{{padding:24px 18px;margin-top:20px;border-radius:10px}}
-  .card h2{{font-size:1.15rem}}
-  .card .subtitle{{font-size:.85rem}}
-  .btn{{padding:14px 20px;font-size:.95rem;border-radius:10px}}
-  .divider{{margin:20px 0;font-size:.8rem}}
-  .features{{grid-template-columns:1fr;gap:12px;margin-top:20px}}
-  .feature{{padding:16px}}
-  .feature .icon{{font-size:1.4rem;margin-bottom:6px}}
-  .feature h3{{font-size:.9rem}}
-  .feature p{{font-size:.8rem}}
-  .manifest-url{{font-size:.7rem;padding:10px 12px}}
+  .card{{padding:24px 18px;margin-top:18px}}
+  .btn{{padding:13px 18px;font-size:.95rem}}
   footer{{padding:24px 16px}}
 }}
 @media(max-width:360px){{
-  .hero h1{{font-size:1.5rem}}
-  .hero p{{font-size:.88rem}}
+  .hero h1{{font-size:1.4rem}}
   .card{{padding:20px 14px}}
-  .btn{{padding:12px 16px;font-size:.9rem}}
+  .btn{{padding:12px 14px;font-size:.9rem}}
 }}
 </style>
 </head>
@@ -121,77 +104,112 @@ footer a:hover{{color:#e5e5e5}}
 
 <div class="hero">
   <h1><span>CURATIO</span></h1>
-  <p>AI-curated cinema for Stremio. 40 universal catalogs, 14 personalized rows, and 150k+ tagged titles.</p>
+  <p>Sign in to continue</p>
 </div>
 
 <div class="container">
 
-  <!-- Invite Code Card -->
+  <!-- Login Card -->
   <div class="card">
-    <h2>Get Started</h2>
-    <p class="subtitle">Enter your invite code to install the addon or connect your Trakt account.</p>
-
-    <div class="input-group">
-      <label for="invite-code">Invite Code</label>
-      <input type="text" id="invite-code" placeholder="Enter your invite code" required autocomplete="off">
-    </div>
-    <p class="error-msg" id="error-msg"></p>
-
-    <div style="display:flex;flex-direction:column;gap:12px">
-      <button class="btn btn-primary" onclick="verifyAndInstall()">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        Install in Stremio
-      </button>
-
-      <div class="divider">or personalise with Trakt</div>
-
-      <button class="btn btn-trakt" onclick="startTraktAuth()">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
-        Connect with Trakt
-      </button>
-
-      <div class="divider">or create an account</div>
-
-      <a href="/account/register" class="btn btn-secondary" style="text-decoration:none;text-align:center">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4-4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
-        Create Account
-      </a>
-    </div>
-
-    <div class="manifest-url" id="manifest-url" style="display:none"></div>
-  </div>
-
-  <!-- Feature Grid -->
-  <div class="features">
-    <div class="feature">
-      <div class="icon">&#127916;</div>
-      <h3>54 Catalog Rows</h3>
-      <p>40 universal catalogs plus 14 personalized rows — Up Next, Top 10 Today, Because You Watched, and more.</p>
-    </div>
-    <div class="feature">
-      <div class="icon">&#129302;</div>
-      <h3>AI-Powered Tagging</h3>
-      <p>Every title tagged with semantic labels by AI for precise, nuanced matching.</p>
-    </div>
-    <div class="feature">
-      <div class="icon">&#128202;</div>
-      <h3>Trakt Personalization</h3>
-      <p>Up Next, Because You Watched, and Recommended For You — all powered by your watch history.</p>
-    </div>
-    <div class="feature">
-      <div class="icon">&#128293;</div>
-      <h3>Top 10 &amp; Trending</h3>
-      <p>Today's most-watched ranked 1-10, plus what's trending and all-time popular — updated daily.</p>
+    <h2>Log In</h2>
+    <form id="login-form" autocomplete="on">
+      <div class="input-group">
+        <input type="email" id="login-email" placeholder="Email" autocomplete="email" autofocus>
+      </div>
+      <div class="input-group">
+        <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+      </div>
+      <div class="input-group" id="totp-row" style="display:none">
+        <input type="text" id="login-totp" placeholder="2FA Code" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+      </div>
+      <p class="error-msg" id="login-error"></p>
+      <button class="btn btn-primary" type="submit">Sign In</button>
+    </form>
+    <div class="links" style="margin-top:20px">
+      <span style="color:#666">No account?</span>
+      <a href="/account/register" class="purple">Register</a>
     </div>
   </div>
+
+  <div class="divider">or</div>
+
+  <!-- Legacy options -->
+  <details class="legacy">
+    <summary>Install with invite code or connect Trakt</summary>
+    <div class="legacy-inner">
+      <div class="card" style="margin-top:0">
+        <div class="input-group">
+          <input type="text" id="invite-code" placeholder="Invite code" autocomplete="off">
+        </div>
+        <p class="error-msg" id="error-msg"></p>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <button class="btn btn-secondary" onclick="verifyAndInstall()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Install in Stremio
+          </button>
+          <button class="btn btn-trakt" onclick="startTraktAuth()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+            Connect with Trakt
+          </button>
+        </div>
+        <div class="manifest-url" id="manifest-url" style="display:none"></div>
+      </div>
+    </div>
+  </details>
+
 </div>
 
-<footer>
-  Curatio &middot; Powered by Gemini &amp; TMDB<br>
-  <a href="/account/login" style="color:#a855f7">Log in to your account</a>
-</footer>
+<footer>Curatio</footer>
 
 <script>
+// ---- Login ----
+document.getElementById('login-form').addEventListener('submit', function(e) {{
+  e.preventDefault();
+  var email = document.getElementById('login-email').value;
+  var password = document.getElementById('login-password').value;
+  var totp = document.getElementById('login-totp').value;
+  var errEl = document.getElementById('login-error');
+  var btn = e.target.querySelector('button');
+  errEl.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Signing in...';
+
+  fetch('/auth/login', {{
+    method: 'POST',
+    headers: {{ 'Content-Type': 'application/json' }},
+    body: JSON.stringify({{ email: email, password: password, totp_code: totp }})
+  }}).then(function(resp) {{
+    if (resp.ok) {{
+      return resp.json().then(function(data) {{
+        if (!data.totp_enabled) {{
+          window.location.href = '/account/setup-2fa';
+        }} else {{
+          window.location.href = '/account/pair';
+        }}
+      }});
+    }} else {{
+      return resp.json().then(function(data) {{
+        var detail = data.detail || 'Login failed.';
+        if (detail === '2FA code required') {{
+          document.getElementById('totp-row').style.display = '';
+          document.getElementById('login-totp').focus();
+          errEl.textContent = 'Enter your 2FA code.';
+        }} else {{
+          errEl.textContent = detail;
+        }}
+        errEl.style.display = 'block';
+      }});
+    }}
+  }}).catch(function() {{
+    errEl.textContent = 'Something went wrong. Please try again.';
+    errEl.style.display = 'block';
+  }}).finally(function() {{
+    btn.disabled = false;
+    btn.textContent = 'Sign In';
+  }});
+}});
+
+// ---- Legacy: Invite code ----
 function getCode() {{
   var code = document.getElementById('invite-code').value.trim();
   var errEl = document.getElementById('error-msg');
@@ -237,7 +255,6 @@ function startTraktAuth() {{
   if (!code) return;
   var errEl = document.getElementById('error-msg');
 
-  // Verify invite code first, then redirect to Trakt OAuth
   fetch('/auth/start?invite=' + encodeURIComponent(code), {{
     method: 'GET',
     redirect: 'manual'
