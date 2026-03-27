@@ -40,6 +40,7 @@ from app.models import (
     AdminSetting,
     MediaMetadata,
     WatchEvent,
+    Tag,
 )
 from app.catalog_generator import CatalogGenerator
 from app.trakt_client import trakt_client
@@ -335,6 +336,95 @@ def health_check():
     }
 
 
+def _reorder_universals_by_taste(categories: list, user_id: int, db: Session) -> None:
+    """Sort universal categories in-place by overlap with user's taste profile.
+
+    Only called for local-auth users. Trakt users keep the default sort order.
+    """
+    from workers.trakt_sync import build_taste_profile
+
+    watched_ids = [
+        r.tmdb_id
+        for r in db.query(WatchEvent.tmdb_id)
+        .filter(
+            WatchEvent.user_id == user_id,
+            WatchEvent.action.in_(["complete", "imported"]),
+        )
+        .distinct()
+        .all()
+    ]
+    if not watched_ids:
+        return  # no history — keep default order
+
+    # Build a combined taste profile across both media types
+    taste_movie = build_taste_profile(db, watched_ids, "movie", top_n_tags=15)
+    taste_tv = build_taste_profile(db, watched_ids, "tv", top_n_tags=15)
+    taste_tag_ids = set(taste_movie + taste_tv)
+
+    if not taste_tag_ids:
+        return
+
+    # Map tag names → IDs for scoring
+    all_tag_names: set[str] = set()
+    for cat in categories:
+        formula = cat.tag_formula or {}
+        for key in ("mandatory", "required", "optional"):
+            all_tag_names.update(formula.get(key, []))
+
+    tag_name_to_id = {
+        t.name: t.id for t in db.query(Tag).filter(Tag.name.in_(all_tag_names)).all()
+    }
+
+    # Score each category by taste overlap
+    scores: dict[str, int] = {}
+    for cat in categories:
+        formula = cat.tag_formula or {}
+        formula_tag_ids: set[int] = set()
+        for key in ("mandatory", "required", "optional"):
+            for name in formula.get(key, []):
+                tid = tag_name_to_id.get(name)
+                if tid is not None:
+                    formula_tag_ids.add(tid)
+        scores[cat.id] = len(formula_tag_ids & taste_tag_ids)
+
+    categories.sort(key=lambda c: (-scores.get(c.id, 0), c.sort_order))
+
+
+def _get_user_taste_data(user_id: int, db: Session) -> tuple[list[int], set[int]]:
+    """Get taste tag IDs and watched TMDB IDs for a local user.
+
+    Returns (taste_tag_ids, watched_tmdb_ids).
+    """
+    from workers.trakt_sync import build_taste_profile
+
+    watched_ids = [
+        r.tmdb_id
+        for r in db.query(WatchEvent.tmdb_id)
+        .filter(
+            WatchEvent.user_id == user_id,
+            WatchEvent.action.in_(["complete", "imported"]),
+        )
+        .distinct()
+        .all()
+    ]
+    watched_set = set(watched_ids)
+
+    if not watched_ids:
+        return [], watched_set
+
+    taste_movie = build_taste_profile(db, watched_ids, "movie", top_n_tags=15)
+    taste_tv = build_taste_profile(db, watched_ids, "tv", top_n_tags=15)
+    # Deduplicate
+    seen: set[int] = set()
+    taste_tags: list[int] = []
+    for tid in taste_movie + taste_tv:
+        if tid not in seen:
+            seen.add(tid)
+            taste_tags.append(tid)
+
+    return taste_tags, watched_set
+
+
 @app.get("/manifest.json")
 async def bare_manifest_blocked():
     """Block bare /manifest.json — install token required."""
@@ -420,11 +510,16 @@ async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
         response.headers["Cache-Control"] = "public, max-age=3600"
         return response
 
-    # ---- Personalized manifest (Trakt user) ----
+    # ---- Personalized manifest (Trakt or local user) ----
     user = db.query(User).filter(User.user_key == user_key).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="Not found")
+
+    # Trigger initial sync for local users who haven't synced yet
+    is_local = getattr(user, "auth_source", "trakt") == "local"
+    if is_local and user.last_sync is None:
+        _schedule_local_sync(user.id)
 
     # Get universal categories
     universal_categories = (
@@ -433,6 +528,10 @@ async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
         .order_by(UniversalCategory.sort_order)
         .all()
     )
+
+    # For local-auth users, reorder universal categories by taste profile
+    if is_local:
+        _reorder_universals_by_taste(universal_categories, user.id, db)
 
     # Get user's personalized catalogs, ordered like Netflix:
     # BYW first, then recommendations, trending, popular, then universal
@@ -458,7 +557,7 @@ async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
             }
         )
 
-    # Then universal AI-tag categories
+    # Then universal AI-tag categories (reordered by taste for local users)
     for category in universal_categories:
         catalogs.append(
             {
@@ -840,20 +939,23 @@ def _get_cached_catalog(
     hide_foreign: bool = False,
     hide_adult: bool = False,
     hide_unreleased: bool = False,
+    user_taste_tag_ids: list[int] | None = None,
+    exclude_ids: set[int] | None = None,
 ) -> list:
     """Get catalog items with TTL + LRU caching.
 
     Only opens a DB session on cache miss. Serves stale cached data when
     the database is temporarily unreachable (e.g. transient DNS failures).
     """
-    cache_key = f"{catalog_id}:user={user_id}:f={hide_foreign}:a={hide_adult}:u={hide_unreleased}"
+    # Include taste/exclude in cache key when present (per-user cache)
+    taste_key = bool(user_taste_tag_ids)
+    cache_key = f"{catalog_id}:user={user_id}:f={hide_foreign}:a={hide_adult}:u={hide_unreleased}:t={taste_key}"
     now = time()
     ttl = settings.cache_ttl
 
     if cache_key in _catalog_cache:
         cached_at, items = _catalog_cache[cache_key]
         if now - cached_at < ttl:
-            # Touch: move to most-recent by re-inserting
             _catalog_cache[cache_key] = (now, items)
             return items
 
@@ -875,6 +977,8 @@ def _get_cached_catalog(
                 hide_foreign=hide_foreign,
                 hide_adult=hide_adult,
                 hide_unreleased=hide_unreleased,
+                user_taste_tag_ids=user_taste_tag_ids,
+                exclude_ids=exclude_ids,
             )
             _catalog_cache[cache_key] = (now, items)
             _cache_evict()
@@ -1014,14 +1118,34 @@ def catalog(
     ha = settings.hide_adult
     hu = settings.hide_unreleased
 
+    # For local-auth users, compute taste data for universal catalog boosting
+    is_local_user = getattr(user, "auth_source", "trakt") == "local"
+    taste_tags: list[int] | None = None
+    exclude_ids: set[int] | None = None
+    if is_local_user:
+        taste_tags, exclude_ids = _get_user_taste_data(user.id, db)  # type: ignore[arg-type]
+
     if catalog_id.startswith("universal-"):
         actual_id = catalog_id.replace("universal-", "", 1)
         items = _get_cached_catalog(
-            actual_id, db, hide_foreign=hf, hide_adult=ha, hide_unreleased=hu
+            actual_id,
+            db,
+            hide_foreign=hf,
+            hide_adult=ha,
+            hide_unreleased=hu,
+            user_taste_tag_ids=taste_tags,
+            exclude_ids=exclude_ids,
         )
     elif catalog_id.startswith("personal-"):
         actual_id = catalog_id.replace("personal-", "", 1)
-        items = _get_cached_catalog(actual_id, db, user_id=user.id, hide_foreign=hf, hide_adult=ha, hide_unreleased=hu)  # type: ignore[arg-type]
+        items = _get_cached_catalog(
+            actual_id,
+            db,
+            user_id=user.id,  # type: ignore[arg-type]
+            hide_foreign=hf,
+            hide_adult=ha,
+            hide_unreleased=hu,
+        )
     else:
         raise HTTPException(status_code=404, detail="Catalog not found")
 

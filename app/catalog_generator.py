@@ -478,6 +478,8 @@ class CatalogGenerator:
         hide_foreign: bool = False,
         hide_adult: bool = False,
         hide_unreleased: bool = False,
+        user_taste_tag_ids: Optional[List[int]] = None,
+        exclude_ids: Optional[set] = None,
     ) -> List[Dict]:
         """
         Get catalog content with metadata.
@@ -488,6 +490,8 @@ class CatalogGenerator:
             hide_foreign: Exclude non-English content
             hide_adult: Exclude explicit/18+ content
             hide_unreleased: Exclude movies not yet available digitally
+            user_taste_tag_ids: Tag IDs for taste-boosting (local users)
+            exclude_ids: TMDB IDs to exclude (watched/imported items)
 
         Returns:
             List of catalog items with metadata
@@ -524,6 +528,15 @@ class CatalogGenerator:
                 .filter(UniversalCatalogContent.category_id == category_id)
             )
 
+        # Exclude watched/imported items
+        if exclude_ids:
+            if user_id:
+                query = query.filter(UserCatalogContent.tmdb_id.notin_(exclude_ids))
+            else:
+                query = query.filter(
+                    UniversalCatalogContent.tmdb_id.notin_(exclude_ids)
+                )
+
         # Apply content filters (treat NULL metadata as "keep" so items
         # that haven't been backfilled yet aren't silently dropped)
         if hide_foreign:
@@ -541,10 +554,6 @@ class CatalogGenerator:
                 )
             )
         if hide_unreleased:
-            # Hide movies whose release_date is in the future or within the
-            # last 45 days (typical theatrical-to-digital window).  Items with
-            # no release_date are kept so we don't accidentally drop items that
-            # simply haven't been backfilled yet.
             cutoff = (datetime.utcnow() - timedelta(days=45)).strftime("%Y-%m-%d")
             query = query.filter(
                 or_(
@@ -580,5 +589,28 @@ class CatalogGenerator:
                     "rank": content.rank,
                 }
             )
+
+        # Taste-boost: re-rank universal catalog items by user taste overlap
+        if user_taste_tag_ids and not user_id and items:
+            taste_set = set(user_taste_tag_ids)
+            for item in items:
+                # Count how many taste tags this item has
+                tag_hits = (
+                    self.db.query(func.count(MovieTag.tag_id))
+                    .filter(
+                        MovieTag.tmdb_id == item["tmdb_id"],
+                        MovieTag.media_type == item["media_type"],
+                        MovieTag.tag_id.in_(taste_set),
+                    )
+                    .scalar()
+                    or 0
+                )
+                item["_taste_score"] = tag_hits
+
+            # Sort by taste score DESC, then original rank ASC
+            items.sort(key=lambda x: (-x.get("_taste_score", 0), x["rank"]))
+            # Clean up internal field
+            for item in items:
+                item.pop("_taste_score", None)
 
         return items
