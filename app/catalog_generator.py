@@ -502,7 +502,7 @@ class CatalogGenerator:
             # Personalized catalog
             query = (
                 self.db.query(UserCatalogContent, MediaMetadata)
-                .join(
+                .outerjoin(
                     MediaMetadata,
                     and_(
                         UserCatalogContent.tmdb_id == MediaMetadata.tmdb_id,
@@ -518,7 +518,7 @@ class CatalogGenerator:
             # Universal catalog
             query = (
                 self.db.query(UniversalCatalogContent, MediaMetadata)
-                .join(
+                .outerjoin(
                     MediaMetadata,
                     and_(
                         UniversalCatalogContent.tmdb_id == MediaMetadata.tmdb_id,
@@ -569,26 +569,42 @@ class CatalogGenerator:
 
         items = []
         for content, metadata in results:
-            year = ""
-            if metadata.release_date:
-                year = metadata.release_date[:4]
-
-            items.append(
-                {
-                    "tmdb_id": metadata.tmdb_id,
-                    "media_type": metadata.media_type,
-                    "title": metadata.title,
-                    "poster": metadata.poster_path,
-                    "year": year,
-                    "genres": metadata.genres or [],
-                    "rating": metadata.vote_average,
-                    "description": metadata.overview or "",
-                    "backdrop": metadata.backdrop_path,
-                    "imdb_id": metadata.imdb_id,
-                    "logo": metadata.logo_path,
-                    "rank": content.rank,
-                }
-            )
+            if metadata:
+                year = metadata.release_date[:4] if metadata.release_date else ""
+                items.append(
+                    {
+                        "tmdb_id": metadata.tmdb_id,
+                        "media_type": metadata.media_type,
+                        "title": metadata.title,
+                        "poster": metadata.poster_path,
+                        "year": year,
+                        "genres": metadata.genres or [],
+                        "rating": metadata.vote_average,
+                        "description": metadata.overview or "",
+                        "backdrop": metadata.backdrop_path,
+                        "imdb_id": metadata.imdb_id,
+                        "logo": metadata.logo_path,
+                        "rank": content.rank,
+                    }
+                )
+            else:
+                # Metadata not yet backfilled — include with minimal info
+                items.append(
+                    {
+                        "tmdb_id": content.tmdb_id,
+                        "media_type": content.media_type,
+                        "title": f"TMDB {content.tmdb_id}",
+                        "poster": None,
+                        "year": "",
+                        "genres": [],
+                        "rating": None,
+                        "description": "",
+                        "backdrop": None,
+                        "imdb_id": None,
+                        "logo": None,
+                        "rank": content.rank,
+                    }
+                )
 
         # Taste-boost: re-rank universal catalog items by user taste overlap
         if user_taste_tag_ids and not user_id and items:
