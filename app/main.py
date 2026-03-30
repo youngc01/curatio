@@ -620,7 +620,7 @@ def _build_stremio_metas(items: list, catalog_type: str) -> list:
         }
 
         if item.get("poster"):
-            meta["poster"] = f"https://image.tmdb.org/t/p/w500{item['poster']}"
+            meta["poster"] = f"https://image.tmdb.org/t/p/w780{item['poster']}"
 
         if item.get("year"):
             meta["releaseInfo"] = item["year"]
@@ -635,7 +635,9 @@ def _build_stremio_metas(items: list, catalog_type: str) -> list:
             meta["genres"] = item["genres"]
 
         if item.get("backdrop"):
-            meta["background"] = f"https://image.tmdb.org/t/p/w1280{item['backdrop']}"
+            meta["background"] = (
+                f"https://image.tmdb.org/t/p/original{item['backdrop']}"
+            )
 
         if item.get("imdb_id"):
             meta["imdb_id"] = item["imdb_id"]
@@ -683,10 +685,10 @@ def _build_rich_meta(detail: dict, tmdb_type: str, stremio_type: str) -> dict:
 
     # Images
     if detail.get("poster_path"):
-        meta["poster"] = f"https://image.tmdb.org/t/p/w500{detail['poster_path']}"
+        meta["poster"] = f"https://image.tmdb.org/t/p/w780{detail['poster_path']}"
     if detail.get("backdrop_path"):
         meta["background"] = (
-            f"https://image.tmdb.org/t/p/w1280{detail['backdrop_path']}"
+            f"https://image.tmdb.org/t/p/original{detail['backdrop_path']}"
         )
 
     logos = detail.get("images", {}).get("logos", [])

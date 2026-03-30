@@ -433,17 +433,19 @@ async def sync_user_catalogs(
             logger.warning(f"  Tag recs ({media_label}) failed: {e}")
 
     # ------------------------------------------------------------------
-    # Step 5: "Trending Now" — what the Trakt community is watching
+    # Steps 5-7: Trending Now + New Releases (TMDB-based)
     # ------------------------------------------------------------------
-    for media_label, fetch_fn, media_type, slot in [
-        ("movies", trakt_client.get_trending_movies, "movie", "trakt-trending-movie"),
-        ("shows", trakt_client.get_trending_shows, "tv", "trakt-trending-series"),
+    for media_label, media_type, slot in [
+        ("movies", "movie", "trending-movie"),
+        ("shows", "tv", "trending-series"),
     ]:
         try:
-            items = await fetch_fn(access_token, limit=100)
-            tmdb_ids = trakt_client.extract_tmdb_ids(
-                items, "movie" if media_type == "movie" else "show"
+            data = (
+                await tmdb_client.get_trending_movies()
+                if media_type == "movie"
+                else await tmdb_client.get_trending_tv_shows()
             )
+            tmdb_ids = [r["id"] for r in data.get("results", []) if r.get("id")]
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
                     user_id=user.id,
@@ -451,64 +453,39 @@ async def sync_user_catalogs(
                     name="Trending Now",
                     media_type=media_type,
                     tmdb_ids=tmdb_ids,
-                    generation_method="trakt_trending",
+                    generation_method="tmdb_trending",
                 )
                 catalogs_created += 1
                 logger.info(f"  Trending ({media_label}): {len(tmdb_ids)} items")
         except Exception as e:
             logger.warning(f"  Trending ({media_label}) failed: {e}")
 
-    # ------------------------------------------------------------------
-    # Step 6: "Top 10 Today" — most watched today (ranked, not shuffled)
-    # ------------------------------------------------------------------
-    for media_label, fetch_fn, media_type, slot in [
-        ("movies", trakt_client.get_watched_daily_movies, "movie", "top10-movie"),
-        ("shows", trakt_client.get_watched_daily_shows, "tv", "top10-series"),
-    ]:
-        try:
-            items = await fetch_fn(access_token, limit=10)
-            tmdb_ids = trakt_client.extract_tmdb_ids(
-                items, "movie" if media_type == "movie" else "show"
+    try:
+        cutoff_date = (datetime.utcnow() - timedelta(days=90)).strftime("%Y-%m-%d")
+        new_releases = (
+            db.query(MediaMetadata.tmdb_id)
+            .filter(
+                MediaMetadata.release_date >= cutoff_date,
+                MediaMetadata.release_date.isnot(None),
             )
-            if tmdb_ids:
-                catalog_gen.save_user_catalog(
-                    user_id=user.id,
-                    slot_id=slot,
-                    name="Top 10 Today",
-                    media_type=media_type,
-                    tmdb_ids=tmdb_ids,
-                    generation_method="trakt_top10_daily",
-                )
-                catalogs_created += 1
-                logger.info(f"  Top 10 ({media_label}): {len(tmdb_ids)} items")
-        except Exception as e:
-            logger.warning(f"  Top 10 ({media_label}) failed: {e}")
-
-    # ------------------------------------------------------------------
-    # Step 7: "Popular" — all-time popular on Trakt
-    # ------------------------------------------------------------------
-    for media_label, fetch_fn, media_type, slot in [
-        ("movies", trakt_client.get_popular_movies, "movie", "popular-movie"),
-        ("shows", trakt_client.get_popular_shows, "tv", "popular-series"),
-    ]:
-        try:
-            items = await fetch_fn(access_token, limit=100)
-            tmdb_ids = trakt_client.extract_tmdb_ids(
-                items, "movie" if media_type == "movie" else "show"
+            .order_by(MediaMetadata.popularity.desc())
+            .limit(100)
+            .all()
+        )
+        tmdb_ids = [r.tmdb_id for r in new_releases]
+        if tmdb_ids:
+            catalog_gen.save_user_catalog(
+                user_id=user.id,
+                slot_id="new-releases",
+                name="New Releases",
+                media_type="movie",
+                tmdb_ids=tmdb_ids,
+                generation_method="new_releases",
             )
-            if tmdb_ids:
-                catalog_gen.save_user_catalog(
-                    user_id=user.id,
-                    slot_id=slot,
-                    name="Popular",
-                    media_type=media_type,
-                    tmdb_ids=tmdb_ids,
-                    generation_method="trakt_popular",
-                )
-                catalogs_created += 1
-                logger.info(f"  Popular ({media_label}): {len(tmdb_ids)} items")
-        except Exception as e:
-            logger.warning(f"  Popular ({media_label}) failed: {e}")
+            catalogs_created += 1
+            logger.info(f"  New Releases: {len(tmdb_ids)} items")
+    except Exception as e:
+        logger.warning(f"  New Releases failed: {e}")
 
     # ------------------------------------------------------------------
     # Backfill metadata for any TMDB IDs not yet in MediaMetadata.
@@ -1064,8 +1041,7 @@ async def sync_local_user_catalogs(user: User, db: Session) -> int:
         catalogs_created = await _generate_discovery_catalogs(
             user, db, catalog_gen, display
         )
-        # Still generate trending/popular/top10 below — skip to Step 5
-        # (fall through to the trending/popular/top10 section at the end)
+        # Still generate trending + new releases below
         return await _generate_common_catalogs(
             user, db, catalog_gen, catalogs_created, display
         )
