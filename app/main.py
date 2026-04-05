@@ -866,11 +866,12 @@ def _get_shuffle_seed(catalog_id: str) -> int:
 def _shuffle_items(items: list, catalog_id: str) -> list:
     """Shuffle items deterministically for the current time window.
 
-    Trending, New Releases, and Up Next catalogs are never shuffled — they stay in ranked order.
+    Trending, New Releases, Popular, and Up Next catalogs are never shuffled — they stay in ranked order.
     """
     if (
         "trending-" in catalog_id
         or "new-releases" in catalog_id
+        or "popular-" in catalog_id
         or "up-next" in catalog_id
     ):
         return items
