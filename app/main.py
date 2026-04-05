@@ -1150,13 +1150,21 @@ def catalog(
         )
     elif catalog_id.startswith("personal-"):
         actual_id = catalog_id.replace("personal-", "", 1)
+
+        # TMDB-sourced catalogs (trending, new releases, popular) should not
+        # have content filters applied — they are already curated by TMDB and
+        # filtering strips most results (e.g. hide_foreign drops non-English
+        # titles which dominate global trending).
+        tmdb_sourced = actual_id.startswith(
+            ("trending-", "new-releases-", "popular-", "discover-")
+        )
         items = _get_cached_catalog(
             actual_id,
             db,
             user_id=user.id,  # type: ignore[arg-type]
-            hide_foreign=hf,
+            hide_foreign=hf if not tmdb_sourced else False,
             hide_adult=ha,
-            hide_unreleased=hu,
+            hide_unreleased=hu if not tmdb_sourced else False,
         )
     else:
         raise HTTPException(status_code=404, detail="Catalog not found")
