@@ -765,8 +765,15 @@ async def _generate_common_catalogs(
     """
     from app.models import UserCatalog, UserCatalogContent
 
+    # Movies released less than 45 days ago are likely still in theaters
+    digital_cutoff = (datetime.utcnow() - timedelta(days=45)).strftime("%Y-%m-%d")
+
     def _save_metadata_from_results(results: list, media_type: str) -> list[int]:
-        """Extract IDs and save metadata from TMDB list results inline."""
+        """Extract IDs and save metadata from TMDB list results inline.
+
+        For movies, skips items with a release_date newer than the digital
+        cutoff (likely still in theaters). TV shows are never filtered.
+        """
         tmdb_ids: list[int] = []
         for r in results:
             if not r.get("id"):
@@ -774,6 +781,11 @@ async def _generate_common_catalogs(
             tid = r["id"]
             if tid in tmdb_ids:
                 continue
+            # Skip movies that are likely still in theaters
+            if media_type == "movie":
+                rd = r.get("release_date", "")
+                if rd and rd > digital_cutoff:
+                    continue
             tmdb_ids.append(tid)
             # Save metadata directly from list response
             try:
