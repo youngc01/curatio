@@ -539,6 +539,17 @@ async def trigger_daily_update(request: Request, _=Depends(verify_admin)):
     return {"status": "started"}
 
 
+@router.post("/api/sync-users")
+async def sync_all_users_endpoint(request: Request, _=Depends(verify_admin)):
+    """Sync personalized catalogs for all users."""
+    from workers.trakt_sync import sync_all_users
+
+    with get_db() as db:
+        stats = await sync_all_users(db)
+
+    return stats
+
+
 @router.get("/api/build/status")
 async def get_build_status(request: Request, _=Depends(verify_admin)):
     """Get current build progress."""
@@ -1980,6 +1991,14 @@ tr:last-child td{border-bottom:none}
           </p>
           <button class="btn btn-secondary" id="btn-daily-update" onclick="triggerDailyUpdate()">Run Daily Update Now</button>
         </div>
+
+        <div class="card">
+          <h3>Sync User Catalogs</h3>
+          <p style="color:#8b949e;font-size:13px;margin-bottom:20px">
+            Re-sync personalized catalogs for all users (trending, new releases, recommendations, etc.).
+          </p>
+          <button class="btn btn-secondary" id="btn-sync-users" onclick="syncAllUsers()">Sync All Users</button>
+        </div>
       </div>
 
       <div class="card">
@@ -2329,6 +2348,19 @@ async function triggerDailyUpdate() {
   } catch (e) {
     toast('Failed: ' + e.message, 'error');
     document.getElementById('btn-daily-update').disabled = false;
+  }
+}
+
+async function syncAllUsers() {
+  if (!confirm('Sync catalogs for all users? This may take a few minutes.')) return;
+  try {
+    document.getElementById('btn-sync-users').disabled = true;
+    const data = await api('POST', '/admin/api/sync-users');
+    toast(`Sync complete: ${data.synced}/${data.total} users, ${data.catalogs} catalogs`, 'success');
+  } catch (e) {
+    toast('Sync failed: ' + e.message, 'error');
+  } finally {
+    document.getElementById('btn-sync-users').disabled = false;
   }
 }
 
