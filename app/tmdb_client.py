@@ -143,6 +143,31 @@ class TMDBClient:
         """Get detailed information for a specific TV season."""
         return await self._request(f"/tv/{tmdb_id}/season/{season_number}")
 
+    async def get_movie_release_dates(self, tmdb_id: int) -> Dict:
+        """Get release dates for a movie by country and type."""
+        return await self._request(f"/movie/{tmdb_id}/release_dates")
+
+    async def has_us_digital_release(self, tmdb_id: int) -> bool:
+        """Check if a movie has a US digital or physical release date in the past.
+
+        TMDB release types: 1=Premiere, 2=Theatrical(limited),
+        3=Theatrical, 4=Digital, 5=Physical, 6=TV
+        """
+        try:
+            data = await self.get_movie_release_dates(tmdb_id)
+            today = datetime.now().strftime("%Y-%m-%d")
+            for entry in data.get("results", []):
+                if entry.get("iso_3166_1") != "US":
+                    continue
+                for rd in entry.get("release_dates", []):
+                    rtype = rd.get("type")
+                    rdate = (rd.get("release_date") or "")[:10]
+                    if rtype in (4, 5) and rdate and rdate <= today:
+                        return True
+            return False
+        except Exception:
+            return False
+
     async def get_trending_movies(self, time_window: str = "day") -> Dict:
         """Get trending movies (day or week)."""
         return await self._request(f"/trending/movie/{time_window}")
