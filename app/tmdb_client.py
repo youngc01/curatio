@@ -153,8 +153,14 @@ class TMDBClient:
         TMDB release types: 1=Premiere, 2=Theatrical(limited),
         3=Theatrical, 4=Digital, 5=Physical, 6=TV
         """
-        type_names = {1: "Premiere", 2: "Theatrical(limited)", 3: "Theatrical",
-                      4: "Digital", 5: "Physical", 6: "TV"}
+        type_names = {
+            1: "Premiere",
+            2: "Theatrical(limited)",
+            3: "Theatrical",
+            4: "Digital",
+            5: "Physical",
+            6: "TV",
+        }
         try:
             data = await self.get_movie_release_dates(tmdb_id)
             today = datetime.now().strftime("%Y-%m-%d")
