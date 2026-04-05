@@ -765,8 +765,14 @@ async def _generate_common_catalogs(
     """
     from app.models import UserCatalog, UserCatalogContent
 
-    def _save_metadata_from_results(results: list, media_type: str) -> list[int]:
-        """Extract IDs and save metadata from TMDB list results inline."""
+    def _save_metadata_from_results(
+        results: list, media_type: str, filter_lang: bool = True
+    ) -> list[int]:
+        """Extract IDs and save metadata from TMDB list results inline.
+
+        When filter_lang is True (default), excludes non-English and
+        animation/anime content.
+        """
         tmdb_ids: list[int] = []
         for r in results:
             if not r.get("id"):
@@ -774,6 +780,12 @@ async def _generate_common_catalogs(
             tid = r["id"]
             if tid in tmdb_ids:
                 continue
+            if filter_lang:
+                if r.get("original_language") != "en":
+                    continue
+                # Exclude animation/anime (genre_id 16)
+                if 16 in r.get("genre_ids", []):
+                    continue
             tmdb_ids.append(tid)
             # Save metadata directly from list response
             try:
@@ -797,19 +809,6 @@ async def _generate_common_catalogs(
             data = await tmdb_client._request(endpoint, params=params)
             all_results.extend(data.get("results", []))
         return all_results
-
-    def _filter_english(results: list) -> list:
-        """Keep only English-language, non-anime items from TMDB results."""
-        filtered = []
-        for r in results:
-            if r.get("original_language") != "en":
-                continue
-            # Exclude anime (genre_id 16 = Animation) from TV results
-            genre_ids = r.get("genre_ids", [])
-            if 16 in genre_ids:
-                continue
-            filtered.append(r)
-        return filtered
 
     today = datetime.utcnow().strftime("%Y-%m-%d")
 
@@ -842,7 +841,7 @@ async def _generate_common_catalogs(
                 for time_window in ["day", "week"]:
                     data = await tmdb_client.get_trending_tv_shows(time_window)
                     all_results.extend(data.get("results", []))
-                all_results = _filter_english(all_results)
+
             tmdb_ids = _save_metadata_from_results(all_results, media_type)
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
@@ -923,7 +922,7 @@ async def _generate_common_catalogs(
                 for page in range(1, 3):
                     data = await tmdb_client.get_popular_tv_shows(page)
                     all_results.extend(data.get("results", []))
-                all_results = _filter_english(all_results)
+
             tmdb_ids = _save_metadata_from_results(all_results, media_type)
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
@@ -1031,13 +1030,14 @@ async def _generate_discovery_catalogs(
         except Exception as e:
             logger.warning(f"  Discover Today ({media_type}) failed: {e}")
 
-    # "Critically Acclaimed" — high-rated, shuffled daily
+    # "Critically Acclaimed" — high-rated English films, shuffled daily
     try:
         acclaimed = (
             db.query(MediaMetadata.tmdb_id)
             .filter(
                 MediaMetadata.vote_average >= 7.5,
                 MediaMetadata.vote_count >= 1000,
+                MediaMetadata.original_language == "en",
             )
             .order_by(MediaMetadata.vote_average.desc())
             .limit(200)
