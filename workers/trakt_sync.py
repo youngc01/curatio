@@ -757,32 +757,48 @@ async def _generate_common_catalogs(
     catalogs_created: int,
     display: str,
 ) -> int:
-    """Generate trending, new releases, and popular catalogs + backfill metadata.
+    """Generate trending, new releases, and popular catalogs.
 
-    Uses TMDB API directly (not local DB) so catalogs work from day one.
+    Saves metadata inline from TMDB list responses so items have
+    titles/posters immediately — no separate backfill needed.
     Shared by both the with-history and no-history paths.
     """
     from app.models import UserCatalog, UserCatalogContent
 
-    # Collect all TMDB IDs we'll need metadata for
-    all_ids_by_type: Dict[str, Set[int]] = {"movie": set(), "tv": set()}
+    def _save_metadata_from_results(results: list, media_type: str) -> list[int]:
+        """Extract IDs and save metadata from TMDB list results inline."""
+        tmdb_ids: list[int] = []
+        for r in results:
+            if not r.get("id"):
+                continue
+            tid = r["id"]
+            if tid in tmdb_ids:
+                continue
+            tmdb_ids.append(tid)
+            # Save metadata directly from list response
+            try:
+                meta_dict = tmdb_client.extract_metadata(r, media_type)
+                db.merge(MediaMetadata(**meta_dict))
+            except Exception:
+                pass  # ID still gets added to catalog even if metadata save fails
+        db.flush()
+        return tmdb_ids
 
-    # --- Trending Now (movies & series) — 3 pages each for ~60 items ---
+    # --- Trending Now (movies & series) — day + week for ~40 items ---
     for media_label, media_type, slot in [
         ("movies", "movie", "trending-movie"),
         ("shows", "tv", "trending-series"),
     ]:
         try:
-            tmdb_ids: list[int] = []
+            all_results: list = []
             for time_window in ["day", "week"]:
                 data = (
                     await tmdb_client.get_trending_movies(time_window)
                     if media_type == "movie"
                     else await tmdb_client.get_trending_tv_shows(time_window)
                 )
-                for r in data.get("results", []):
-                    if r.get("id") and r["id"] not in tmdb_ids:
-                        tmdb_ids.append(r["id"])
+                all_results.extend(data.get("results", []))
+            tmdb_ids = _save_metadata_from_results(all_results, media_type)
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
                     user_id=user.id,
@@ -792,7 +808,6 @@ async def _generate_common_catalogs(
                     tmdb_ids=tmdb_ids,
                     generation_method="tmdb_trending",
                 )
-                all_ids_by_type[media_type].update(tmdb_ids)
                 catalogs_created += 1
                 logger.info(f"  Trending ({media_label}): {len(tmdb_ids)} items")
         except Exception as e:
@@ -804,7 +819,7 @@ async def _generate_common_catalogs(
         ("shows", "tv", "new-releases-series"),
     ]:
         try:
-            tmdb_ids = []
+            all_results = []
             cutoff = (datetime.utcnow() - timedelta(days=90)).strftime("%Y-%m-%d")
             today = datetime.utcnow().strftime("%Y-%m-%d")
             for page in range(1, 4):  # 3 pages = ~60 items
@@ -830,9 +845,8 @@ async def _generate_common_catalogs(
                             "include_adult": False,
                         },
                     )
-                for r in data.get("results", []):
-                    if r.get("id") and r["id"] not in tmdb_ids:
-                        tmdb_ids.append(r["id"])
+                all_results.extend(data.get("results", []))
+            tmdb_ids = _save_metadata_from_results(all_results, media_type)
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
                     user_id=user.id,
@@ -842,7 +856,6 @@ async def _generate_common_catalogs(
                     tmdb_ids=tmdb_ids,
                     generation_method="tmdb_new_releases",
                 )
-                all_ids_by_type[media_type].update(tmdb_ids)
                 catalogs_created += 1
                 logger.info(f"  New Releases ({media_label}): {len(tmdb_ids)} items")
         except Exception as e:
@@ -854,16 +867,15 @@ async def _generate_common_catalogs(
         ("shows", "tv", "popular-series"),
     ]:
         try:
-            tmdb_ids = []
+            all_results = []
             for page in range(1, 3):  # 2 pages = ~40 items
                 data = (
                     await tmdb_client.get_popular_movies(page)
                     if media_type == "movie"
                     else await tmdb_client.get_popular_tv_shows(page)
                 )
-                for r in data.get("results", []):
-                    if r.get("id") and r["id"] not in tmdb_ids:
-                        tmdb_ids.append(r["id"])
+                all_results.extend(data.get("results", []))
+            tmdb_ids = _save_metadata_from_results(all_results, media_type)
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
                     user_id=user.id,
@@ -873,19 +885,12 @@ async def _generate_common_catalogs(
                     tmdb_ids=tmdb_ids,
                     generation_method="tmdb_popular",
                 )
-                all_ids_by_type[media_type].update(tmdb_ids)
                 catalogs_created += 1
                 logger.info(f"  Popular ({media_label}): {len(tmdb_ids)} items")
         except Exception as e:
             logger.warning(f"  Popular ({media_label}) failed: {e}")
 
-    # --- Backfill metadata FIRST so catalogs have real data immediately ---
-    try:
-        await _backfill_metadata(db, all_ids_by_type)
-    except Exception as e:
-        logger.warning(f"Common catalog metadata backfill had errors: {e}")
-
-    # Also backfill any remaining user catalog items
+    # --- Backfill metadata for other user catalog items (BYW, recs, etc.) ---
     user_catalog_ids = [
         c.id
         for c in db.query(UserCatalog.id).filter(UserCatalog.user_id == user.id).all()
