@@ -74,6 +74,43 @@ def get_slot_sort_order(slot_id: str) -> int:
     return SLOT_ORDER.get(slot_id, 100)
 
 
+# Valid slot IDs — used to clean up stale catalogs from previous code versions
+VALID_SLOTS = set(SLOT_ORDER.keys())
+
+
+def _cleanup_stale_catalogs(user_id: int, db: Session) -> int:
+    """Delete user catalogs with slot IDs that are no longer in SLOT_ORDER.
+
+    Returns the number of catalogs removed.
+    """
+    from app.models import UserCatalog, UserCatalogContent
+
+    stale = (
+        db.query(UserCatalog)
+        .filter(
+            UserCatalog.user_id == user_id,
+            UserCatalog.slot_id.notin_(VALID_SLOTS),
+        )
+        .all()
+    )
+    if not stale:
+        return 0
+
+    stale_ids = [c.id for c in stale]
+    slot_names = [c.slot_id for c in stale]
+    db.query(UserCatalogContent).filter(
+        UserCatalogContent.catalog_id.in_(stale_ids)
+    ).delete(synchronize_session=False)
+    db.query(UserCatalog).filter(UserCatalog.id.in_(stale_ids)).delete(
+        synchronize_session=False
+    )
+    db.flush()
+    logger.info(
+        f"  Cleaned up {len(stale)} stale catalogs for user {user_id}: {slot_names}"
+    )
+    return len(stale)
+
+
 # ---------------------------------------------------------------------------
 # Tag-based "Because You Watched" generation
 # ---------------------------------------------------------------------------
@@ -320,6 +357,9 @@ async def sync_user_catalogs(
     """
     catalog_gen = CatalogGenerator(db)
     catalogs_created = 0
+
+    # Clean up stale catalogs from previous code versions
+    _cleanup_stale_catalogs(user.id, db)
 
     # ------------------------------------------------------------------
     # Step 1: Fetch watch history from Trakt
@@ -980,6 +1020,9 @@ async def sync_local_user_catalogs(user: User, db: Session) -> int:
     catalog_gen = CatalogGenerator(db)
     catalogs_created = 0
     display = user.display_name or user.user_key[:8]
+
+    # Clean up stale catalogs from previous code versions
+    _cleanup_stale_catalogs(user.id, db)
 
     logger.info(f"Syncing local catalogs for user {display}...")
 
