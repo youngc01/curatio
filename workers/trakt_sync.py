@@ -783,8 +783,6 @@ async def _generate_common_catalogs(
             if filter_lang:
                 if r.get("original_language") != "en":
                     continue
-                # Exclude animation/anime (genre_id 16)
-                if 16 in r.get("genre_ids", []):
                     continue
             tmdb_ids.append(tid)
             # Save metadata directly from list response
@@ -812,11 +810,12 @@ async def _generate_common_catalogs(
 
     today = datetime.utcnow().strftime("%Y-%m-%d")
 
-    # Common params for movie discover: English, digitally released in US
+    # Common params for movie discover: English, digitally released in US, no anime
     movie_base = {
         "with_release_type": "4|5",
         "region": "US",
         "with_original_language": "en",
+        "without_keywords": "210024",
         "include_adult": False,
     }
 
@@ -879,7 +878,7 @@ async def _generate_common_catalogs(
                     "tv",
                     {
                         "with_original_language": "en",
-                        "without_genres": "16",
+                        "without_keywords": "210024",
                         "first_air_date.gte": cutoff_90d,
                         "first_air_date.lte": today,
                         "include_adult": False,

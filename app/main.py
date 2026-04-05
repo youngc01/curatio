@@ -1151,18 +1151,15 @@ def catalog(
     elif catalog_id.startswith("personal-"):
         actual_id = catalog_id.replace("personal-", "", 1)
 
-        # TMDB-sourced catalogs (trending, new releases, popular) should not
-        # have content filters applied — they are already curated by TMDB and
-        # filtering strips most results (e.g. hide_foreign drops non-English
-        # titles which dominate global trending).
-        tmdb_sourced = actual_id.startswith(
-            ("trending-", "new-releases-", "popular-", "discover-")
-        )
+        # TMDB-sourced catalogs already filter at generation time (English,
+        # no anime, digital release only). Skip hide_unreleased for them
+        # since they're already digitally released content.
+        tmdb_sourced = actual_id.startswith(("trending-", "new-releases-", "popular-"))
         items = _get_cached_catalog(
             actual_id,
             db,
             user_id=user.id,  # type: ignore[arg-type]
-            hide_foreign=hf if not tmdb_sourced else False,
+            hide_foreign=hf,
             hide_adult=ha,
             hide_unreleased=hu if not tmdb_sourced else False,
         )
