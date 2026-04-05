@@ -536,11 +536,15 @@ async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
 
     # Get user's personalized catalogs, ordered like Netflix:
     # BYW first, then recommendations, trending, popular, then universal
-    from workers.trakt_sync import get_slot_sort_order
+    from workers.trakt_sync import get_slot_sort_order, VALID_SLOTS
 
     user_catalogs = (
         db.query(UserCatalog)
-        .filter(UserCatalog.user_id == user.id, UserCatalog.is_active.is_(True))
+        .filter(
+            UserCatalog.user_id == user.id,
+            UserCatalog.is_active.is_(True),
+            UserCatalog.slot_id.in_(VALID_SLOTS),
+        )
         .all()
     )
     user_catalogs.sort(key=lambda c: get_slot_sort_order(c.slot_id))
