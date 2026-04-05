@@ -765,13 +765,14 @@ async def _generate_common_catalogs(
     """
     from app.models import UserCatalog, UserCatalogContent
 
-    def _save_metadata_from_results(
-        results: list, media_type: str, filter_lang: bool = True
+    async def _save_metadata_from_results(
+        results: list, media_type: str, check_digital: bool = False
     ) -> list[int]:
         """Extract IDs and save metadata from TMDB list results inline.
 
-        When filter_lang is True (default), excludes non-English and
-        animation/anime content.
+        Filters to English-language only. When check_digital is True (movies),
+        verifies each item has a US digital/physical release via TMDB's
+        release_dates endpoint.
         """
         tmdb_ids: list[int] = []
         for r in results:
@@ -780,9 +781,11 @@ async def _generate_common_catalogs(
             tid = r["id"]
             if tid in tmdb_ids:
                 continue
-            if filter_lang:
-                if r.get("original_language") != "en":
-                    continue
+            if r.get("original_language") != "en":
+                continue
+            # For movies, verify US digital/physical release exists
+            if check_digital:
+                if not await tmdb_client.has_us_digital_release(tid):
                     continue
             tmdb_ids.append(tid)
             # Save metadata directly from list response
@@ -796,52 +799,25 @@ async def _generate_common_catalogs(
         db.flush()
         return tmdb_ids
 
-    async def _fetch_discover_pages(
-        media_type: str, extra_params: dict, pages: int = 3
-    ) -> list:
-        """Fetch multiple pages from TMDB discover endpoint."""
-        all_results: list = []
-        for page in range(1, pages + 1):
-            params = {"page": page, "sort_by": "popularity.desc", **extra_params}
-            endpoint = "/discover/movie" if media_type == "movie" else "/discover/tv"
-            data = await tmdb_client._request(endpoint, params=params)
-            all_results.extend(data.get("results", []))
-        return all_results
-
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-
-    # Common params for movie discover: English, digitally released in US, no anime
-    movie_base = {
-        "with_release_type": "4|5",
-        "region": "US",
-        "with_original_language": "en",
-        "without_keywords": "210024",
-        "include_adult": False,
-    }
-
     # --- Trending Now ---
+    # Movies: TMDB trending + verify US digital release per item
+    # TV: TMDB trending, English only
     for media_label, media_type, slot in [
         ("movies", "movie", "trending-movie"),
         ("shows", "tv", "trending-series"),
     ]:
         try:
-            if media_type == "movie":
-                all_results = await _fetch_discover_pages(
-                    "movie",
-                    {
-                        **movie_base,
-                        "release_date.lte": today,
-                        "vote_count.gte": 50,
-                    },
-                    pages=2,
+            all_results: list = []
+            for time_window in ["day", "week"]:
+                data = (
+                    await tmdb_client.get_trending_movies(time_window)
+                    if media_type == "movie"
+                    else await tmdb_client.get_trending_tv_shows(time_window)
                 )
-            else:
-                all_results = []
-                for time_window in ["day", "week"]:
-                    data = await tmdb_client.get_trending_tv_shows(time_window)
-                    all_results.extend(data.get("results", []))
-
-            tmdb_ids = _save_metadata_from_results(all_results, media_type)
+                all_results.extend(data.get("results", []))
+            tmdb_ids = await _save_metadata_from_results(
+                all_results, media_type, check_digital=(media_type == "movie")
+            )
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
                     user_id=user.id,
@@ -856,36 +832,48 @@ async def _generate_common_catalogs(
         except Exception as e:
             logger.warning(f"  Trending ({media_label}) failed: {e}")
 
-    # --- New Releases — digitally released in last 90 days ---
+    # --- New Releases — last 90 days ---
+    # Movies: TMDB discover + verify US digital release per item
+    # TV: TMDB discover, English only, no anime keyword
     cutoff_90d = (datetime.utcnow() - timedelta(days=90)).strftime("%Y-%m-%d")
+    today = datetime.utcnow().strftime("%Y-%m-%d")
     for media_label, media_type, slot in [
         ("movies", "movie", "new-releases-movie"),
         ("shows", "tv", "new-releases-series"),
     ]:
         try:
-            if media_type == "movie":
-                all_results = await _fetch_discover_pages(
-                    "movie",
-                    {
-                        **movie_base,
-                        "release_date.gte": cutoff_90d,
-                        "release_date.lte": today,
-                    },
-                    pages=3,
-                )
-            else:
-                all_results = await _fetch_discover_pages(
-                    "tv",
-                    {
-                        "with_original_language": "en",
-                        "without_keywords": "210024",
-                        "first_air_date.gte": cutoff_90d,
-                        "first_air_date.lte": today,
-                        "include_adult": False,
-                    },
-                    pages=3,
-                )
-            tmdb_ids = _save_metadata_from_results(all_results, media_type)
+            all_results = []
+            for page in range(1, 4):
+                if media_type == "movie":
+                    data = await tmdb_client._request(
+                        "/discover/movie",
+                        params={
+                            "page": page,
+                            "sort_by": "popularity.desc",
+                            "primary_release_date.gte": cutoff_90d,
+                            "primary_release_date.lte": today,
+                            "with_original_language": "en",
+                            "without_keywords": "210024",
+                            "include_adult": False,
+                        },
+                    )
+                else:
+                    data = await tmdb_client._request(
+                        "/discover/tv",
+                        params={
+                            "page": page,
+                            "sort_by": "popularity.desc",
+                            "first_air_date.gte": cutoff_90d,
+                            "first_air_date.lte": today,
+                            "with_original_language": "en",
+                            "without_keywords": "210024",
+                            "include_adult": False,
+                        },
+                    )
+                all_results.extend(data.get("results", []))
+            tmdb_ids = await _save_metadata_from_results(
+                all_results, media_type, check_digital=(media_type == "movie")
+            )
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
                     user_id=user.id,
@@ -900,29 +888,25 @@ async def _generate_common_catalogs(
         except Exception as e:
             logger.warning(f"  New Releases ({media_label}) failed: {e}")
 
-    # --- Popular — all-time popular, digitally available ---
+    # --- Popular ---
+    # Movies: TMDB popular + verify US digital release per item
+    # TV: TMDB popular, English only
     for media_label, media_type, slot in [
         ("movies", "movie", "popular-movie"),
         ("shows", "tv", "popular-series"),
     ]:
         try:
-            if media_type == "movie":
-                all_results = await _fetch_discover_pages(
-                    "movie",
-                    {
-                        **movie_base,
-                        "vote_count.gte": 200,
-                        "vote_average.gte": 6.0,
-                    },
-                    pages=2,
+            all_results = []
+            for page in range(1, 3):
+                data = (
+                    await tmdb_client.get_popular_movies(page)
+                    if media_type == "movie"
+                    else await tmdb_client.get_popular_tv_shows(page)
                 )
-            else:
-                all_results = []
-                for page in range(1, 3):
-                    data = await tmdb_client.get_popular_tv_shows(page)
-                    all_results.extend(data.get("results", []))
-
-            tmdb_ids = _save_metadata_from_results(all_results, media_type)
+                all_results.extend(data.get("results", []))
+            tmdb_ids = await _save_metadata_from_results(
+                all_results, media_type, check_digital=(media_type == "movie")
+            )
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
                     user_id=user.id,
