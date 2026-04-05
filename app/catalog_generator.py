@@ -570,6 +570,10 @@ class CatalogGenerator:
         items = []
         for content, metadata in results:
             if metadata:
+                genres = metadata.genres or []
+                # Skip animation/anime when hiding foreign content
+                if hide_foreign and "Animation" in genres:
+                    continue
                 year = metadata.release_date[:4] if metadata.release_date else ""
                 items.append(
                     {
