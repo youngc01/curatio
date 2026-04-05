@@ -541,11 +541,20 @@ async def trigger_daily_update(request: Request, _=Depends(verify_admin)):
 
 @router.post("/api/sync-users")
 async def sync_all_users_endpoint(request: Request, _=Depends(verify_admin)):
-    """Sync personalized catalogs for all users."""
+    """Sync personalized catalogs for all users and clear catalog cache."""
     from workers.trakt_sync import sync_all_users
 
     with get_db() as db:
         stats = await sync_all_users(db)
+
+    # Clear the catalog cache so fresh data is served immediately
+    try:
+        from app.main import _catalog_cache
+
+        _catalog_cache.clear()
+        logger.info("Catalog cache cleared after sync")
+    except Exception as e:
+        logger.warning(f"Could not clear catalog cache: {e}")
 
     return stats
 

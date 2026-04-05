@@ -785,7 +785,10 @@ async def _generate_common_catalogs(
                 continue
             # For movies, verify US digital/physical release exists
             if check_digital:
-                if not await tmdb_client.has_us_digital_release(tid):
+                has_release = await tmdb_client.has_us_digital_release(tid)
+                if not has_release:
+                    title = r.get("title") or r.get("name") or str(tid)
+                    logger.info(f"  Excluding '{title}' (TMDB {tid}): no US digital release")
                     continue
             tmdb_ids.append(tid)
             # Save metadata directly from list response
