@@ -799,8 +799,17 @@ async def _generate_common_catalogs(
         return all_results
 
     def _filter_english(results: list) -> list:
-        """Keep only English-language items from TMDB results."""
-        return [r for r in results if r.get("original_language") == "en"]
+        """Keep only English-language, non-anime items from TMDB results."""
+        filtered = []
+        for r in results:
+            if r.get("original_language") != "en":
+                continue
+            # Exclude anime (genre_id 16 = Animation) from TV results
+            genre_ids = r.get("genre_ids", [])
+            if 16 in genre_ids:
+                continue
+            filtered.append(r)
+        return filtered
 
     today = datetime.utcnow().strftime("%Y-%m-%d")
 
@@ -871,6 +880,7 @@ async def _generate_common_catalogs(
                     "tv",
                     {
                         "with_original_language": "en",
+                        "without_genres": "16",
                         "first_air_date.gte": cutoff_90d,
                         "first_air_date.lte": today,
                         "include_adult": False,
