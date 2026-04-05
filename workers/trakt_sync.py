@@ -18,7 +18,7 @@ Only digitally-released content — no anticipated/unreleased titles.
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import List, Dict, Literal, Set
+from typing import List, Dict, Set
 
 from loguru import logger
 from sqlalchemy import func
@@ -765,9 +765,7 @@ async def _generate_common_catalogs(
     """
     from app.models import UserCatalog, UserCatalogContent
 
-    def _save_metadata_from_results(
-        results: list, media_type: "Literal['movie', 'tv']"
-    ) -> list[int]:
+    def _save_metadata_from_results(results: list, media_type: str) -> list[int]:
         """Extract IDs and save metadata from TMDB list results inline."""
         tmdb_ids: list[int] = []
         for r in results:
@@ -779,7 +777,9 @@ async def _generate_common_catalogs(
             tmdb_ids.append(tid)
             # Save metadata directly from list response
             try:
-                meta_dict = tmdb_client.extract_metadata(r, media_type)
+                meta_dict = tmdb_client.extract_metadata(
+                    r, media_type  # type: ignore[arg-type]
+                )
                 db.merge(MediaMetadata(**meta_dict))
             except Exception:
                 pass  # ID still gets added to catalog even if metadata save fails
