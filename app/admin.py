@@ -541,22 +541,31 @@ async def trigger_daily_update(request: Request, _=Depends(verify_admin)):
 
 @router.post("/api/sync-users")
 async def sync_all_users_endpoint(request: Request, _=Depends(verify_admin)):
-    """Sync personalized catalogs for all users and clear catalog cache."""
+    """Launch catalog sync for all users in the background.
+
+    Returns immediately so the server stays responsive for meta/catalog
+    requests while the sync runs.
+    """
     from workers.trakt_sync import sync_all_users
 
-    with get_db() as db:
-        stats = await sync_all_users(db)
+    async def _run_sync():
+        try:
+            with get_db() as db:
+                stats = await sync_all_users(db)
+            logger.info(f"Background sync complete: {stats}")
+            # Clear the catalog cache so fresh data is served
+            try:
+                from app.main import _catalog_cache
 
-    # Clear the catalog cache so fresh data is served immediately
-    try:
-        from app.main import _catalog_cache
+                _catalog_cache.clear()
+                logger.info("Catalog cache cleared after sync")
+            except Exception as e:
+                logger.warning(f"Could not clear catalog cache: {e}")
+        except Exception as e:
+            logger.error(f"Background sync failed: {e}")
 
-        _catalog_cache.clear()
-        logger.info("Catalog cache cleared after sync")
-    except Exception as e:
-        logger.warning(f"Could not clear catalog cache: {e}")
-
-    return stats
+    asyncio.create_task(_run_sync())
+    return {"status": "started", "message": "Sync running in background"}
 
 
 @router.get("/api/build/status")
@@ -2361,11 +2370,11 @@ async function triggerDailyUpdate() {
 }
 
 async function syncAllUsers() {
-  if (!confirm('Sync catalogs for all users? This may take a few minutes.')) return;
+  if (!confirm('Sync catalogs for all users? This runs in the background.')) return;
   try {
     document.getElementById('btn-sync-users').disabled = true;
-    const data = await api('POST', '/admin/api/sync-users');
-    toast(`Sync complete: ${data.synced}/${data.total} users, ${data.catalogs} catalogs`, 'success');
+    await api('POST', '/admin/api/sync-users');
+    toast('Catalog sync started in background. Check logs for progress.', 'success');
   } catch (e) {
     toast('Sync failed: ' + e.message, 'error');
   } finally {
