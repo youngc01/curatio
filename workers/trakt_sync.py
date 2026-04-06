@@ -786,6 +786,8 @@ async def _generate_common_catalogs(
             # For movies, verify US digital/physical release exists
             if check_digital:
                 has_release = await tmdb_client.has_us_digital_release(tid)
+                # Yield to event loop so meta/catalog requests aren't starved
+                await asyncio.sleep(0)
                 if not has_release:
                     title = r.get("title") or r.get("name") or str(tid)
                     logger.info(
