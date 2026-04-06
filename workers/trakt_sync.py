@@ -793,12 +793,28 @@ async def _generate_common_catalogs(
                     )
                     continue
             tmdb_ids.append(tid)
-            # Save metadata directly from list response
+            # Save metadata directly from list response.
+            # Use selective update so we don't overwrite richer detail-level
+            # fields (imdb_id, logo) with None from list responses.
             try:
                 meta_dict = tmdb_client.extract_metadata(
                     r, media_type  # type: ignore[arg-type]
                 )
-                db.merge(MediaMetadata(**meta_dict))
+                existing = (
+                    db.query(MediaMetadata)
+                    .filter(
+                        MediaMetadata.tmdb_id == tid,
+                        MediaMetadata.media_type == media_type,
+                    )
+                    .first()
+                )
+                if existing:
+                    # Only update fields that have non-null values from list
+                    for key, val in meta_dict.items():
+                        if val is not None:
+                            setattr(existing, key, val)
+                else:
+                    db.add(MediaMetadata(**meta_dict))
             except Exception:
                 pass  # ID still gets added to catalog even if metadata save fails
         db.flush()
