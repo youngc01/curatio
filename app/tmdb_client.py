@@ -192,13 +192,19 @@ class TMDBClient:
             logger.warning(f"Release date check failed for {tmdb_id}: {e}")
             return False
 
-    async def get_trending_movies(self, time_window: str = "day") -> Dict:
+    async def get_trending_movies(
+        self, time_window: str = "day", page: int = 1
+    ) -> Dict:
         """Get trending movies (day or week)."""
-        return await self._request(f"/trending/movie/{time_window}")
+        return await self._request(
+            f"/trending/movie/{time_window}", params={"page": page}
+        )
 
-    async def get_trending_tv_shows(self, time_window: str = "day") -> Dict:
+    async def get_trending_tv_shows(
+        self, time_window: str = "day", page: int = 1
+    ) -> Dict:
         """Get trending TV shows (day or week)."""
-        return await self._request(f"/trending/tv/{time_window}")
+        return await self._request(f"/trending/tv/{time_window}", params={"page": page})
 
     async def get_similar_movies(self, tmdb_id: int, page: int = 1) -> Dict:
         """Get movies similar to the given movie."""

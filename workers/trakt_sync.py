@@ -823,7 +823,8 @@ async def _generate_common_catalogs(
         return tmdb_ids
 
     # --- Trending Now ---
-    # Movies: TMDB trending + verify US digital release per item
+    # Movies: TMDB trending, English only (no digital release check — trending
+    # shows what's popular right now, including theatrical releases)
     # TV: TMDB trending, English only
     for media_label, media_type, slot in [
         ("movies", "movie", "trending-movie"),
@@ -832,14 +833,17 @@ async def _generate_common_catalogs(
         try:
             all_results: list = []
             for time_window in ["day", "week"]:
-                data = (
-                    await tmdb_client.get_trending_movies(time_window)
-                    if media_type == "movie"
-                    else await tmdb_client.get_trending_tv_shows(time_window)
-                )
-                all_results.extend(data.get("results", []))
+                for page in range(1, 4):
+                    data = (
+                        await tmdb_client.get_trending_movies(time_window, page=page)
+                        if media_type == "movie"
+                        else await tmdb_client.get_trending_tv_shows(
+                            time_window, page=page
+                        )
+                    )
+                    all_results.extend(data.get("results", []))
             tmdb_ids = await _save_metadata_from_results(
-                all_results, media_type, check_digital=(media_type == "movie")
+                all_results, media_type, check_digital=False
             )
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
