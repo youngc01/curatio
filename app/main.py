@@ -42,6 +42,7 @@ from app.models import (
     WatchEvent,
     Tag,
     WatchProgress,
+    LibraryItem,
 )
 from app.catalog_generator import CatalogGenerator
 from app.trakt_client import trakt_client
@@ -1894,6 +1895,219 @@ async def watch_history(user_key: str, limit: int = Query(50, ge=1, le=200)):
             items.append(item)
 
     return {"items": items}
+
+
+# ---------------------------------------------------------------------------
+# Library — saved items synced across all the user's devices
+# ---------------------------------------------------------------------------
+class LibraryAddRequest(BaseModel):
+    """Payload to add a single item to the user's library."""
+
+    tmdb_id: int
+    media_type: Literal["movie", "tv"]
+    title: Optional[str] = None
+    poster_path: Optional[str] = None
+    year: Optional[str] = None
+
+
+class LibrarySyncItem(BaseModel):
+    """One item in a bulk sync request."""
+
+    tmdb_id: int
+    media_type: Literal["movie", "tv"]
+    title: Optional[str] = None
+    poster_path: Optional[str] = None
+    year: Optional[str] = None
+
+
+class LibrarySyncRequest(BaseModel):
+    """Bulk sync: client pushes adds + removes, server returns full state."""
+
+    added: list[LibrarySyncItem] = []
+    removed: list[LibrarySyncItem] = []
+
+
+def _serialize_library_item(item: LibraryItem) -> dict:
+    return {
+        "tmdb_id": item.tmdb_id,
+        "media_type": item.media_type,
+        "title": item.title,
+        "poster_path": item.poster_path,
+        "year": item.year,
+        "added_at": item.added_at.isoformat() + "Z" if item.added_at else None,
+    }
+
+
+@app.get("/{user_key}/library")
+async def get_library(
+    user_key: str,
+    media_type: Optional[Literal["movie", "tv"]] = None,
+    since: Optional[str] = None,
+    limit: int = Query(500, ge=1, le=2000),
+):
+    """Return the user's saved library items.
+
+    Sorted by most-recently-added first. Supports filtering by media_type
+    and incremental sync via ``since`` (ISO 8601 timestamp — only items
+    added after that time are returned).
+    """
+    with get_db() as db:
+        user = db.query(User).filter(User.user_key == user_key).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Not found")
+
+        query = db.query(LibraryItem).filter(LibraryItem.user_id == user.id)
+        if media_type:
+            query = query.filter(LibraryItem.media_type == media_type)
+        if since:
+            try:
+                since_dt = datetime.fromisoformat(since.rstrip("Z"))
+                query = query.filter(LibraryItem.added_at > since_dt)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid 'since' timestamp")
+
+        rows = query.order_by(LibraryItem.added_at.desc()).limit(limit).all()
+        return {"items": [_serialize_library_item(r) for r in rows]}
+
+
+@app.post("/{user_key}/library")
+async def add_library_item(user_key: str, payload: LibraryAddRequest):
+    """Add an item to the user's library. Idempotent — re-adding is a no-op."""
+    with get_db() as db:
+        user = db.query(User).filter(User.user_key == user_key).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Not found")
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="User is inactive")
+
+        existing = (
+            db.query(LibraryItem)
+            .filter(
+                LibraryItem.user_id == user.id,
+                LibraryItem.tmdb_id == payload.tmdb_id,
+                LibraryItem.media_type == payload.media_type,
+            )
+            .first()
+        )
+        if existing:
+            # Refresh denormalized fields if client supplied newer data
+            if payload.title:
+                existing.title = payload.title
+            if payload.poster_path:
+                existing.poster_path = payload.poster_path
+            if payload.year:
+                existing.year = payload.year
+            db.flush()
+            return {
+                "status": "ok",
+                "added": False,
+                "item": _serialize_library_item(existing),
+            }
+
+        item = LibraryItem(
+            user_id=user.id,
+            tmdb_id=payload.tmdb_id,
+            media_type=payload.media_type,
+            title=payload.title,
+            poster_path=payload.poster_path,
+            year=payload.year,
+        )
+        db.add(item)
+        db.flush()
+        return {
+            "status": "ok",
+            "added": True,
+            "item": _serialize_library_item(item),
+        }
+
+
+@app.delete("/{user_key}/library/{media_type}/{tmdb_id}")
+async def remove_library_item(
+    user_key: str, media_type: Literal["movie", "tv"], tmdb_id: int
+):
+    """Remove an item from the user's library."""
+    with get_db() as db:
+        user = db.query(User).filter(User.user_key == user_key).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Not found")
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="User is inactive")
+
+        deleted = (
+            db.query(LibraryItem)
+            .filter(
+                LibraryItem.user_id == user.id,
+                LibraryItem.tmdb_id == tmdb_id,
+                LibraryItem.media_type == media_type,
+            )
+            .delete(synchronize_session=False)
+        )
+        return {"status": "ok", "removed": bool(deleted)}
+
+
+@app.post("/{user_key}/library/sync")
+async def sync_library(user_key: str, payload: LibrarySyncRequest):
+    """Bulk sync: apply client's adds + removes, return full server state.
+
+    Useful for first-launch reconciliation when the app has offline edits
+    or for migrating from another service.
+    """
+    with get_db() as db:
+        user = db.query(User).filter(User.user_key == user_key).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Not found")
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="User is inactive")
+
+        # Apply removes first so re-adds in the same payload still work
+        for r in payload.removed:
+            db.query(LibraryItem).filter(
+                LibraryItem.user_id == user.id,
+                LibraryItem.tmdb_id == r.tmdb_id,
+                LibraryItem.media_type == r.media_type,
+            ).delete(synchronize_session=False)
+
+        for a in payload.added:
+            existing = (
+                db.query(LibraryItem)
+                .filter(
+                    LibraryItem.user_id == user.id,
+                    LibraryItem.tmdb_id == a.tmdb_id,
+                    LibraryItem.media_type == a.media_type,
+                )
+                .first()
+            )
+            if existing:
+                if a.title:
+                    existing.title = a.title
+                if a.poster_path:
+                    existing.poster_path = a.poster_path
+                if a.year:
+                    existing.year = a.year
+            else:
+                db.add(
+                    LibraryItem(
+                        user_id=user.id,
+                        tmdb_id=a.tmdb_id,
+                        media_type=a.media_type,
+                        title=a.title,
+                        poster_path=a.poster_path,
+                        year=a.year,
+                    )
+                )
+
+        db.flush()
+        rows = (
+            db.query(LibraryItem)
+            .filter(LibraryItem.user_id == user.id)
+            .order_by(LibraryItem.added_at.desc())
+            .all()
+        )
+        return {
+            "status": "ok",
+            "applied": {"added": len(payload.added), "removed": len(payload.removed)},
+            "items": [_serialize_library_item(r) for r in rows],
+        }
 
 
 @app.get("/auth/verify-invite")

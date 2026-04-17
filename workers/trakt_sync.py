@@ -823,7 +823,8 @@ async def _generate_common_catalogs(
         return tmdb_ids
 
     # --- Trending Now ---
-    # Movies: TMDB trending + verify US digital release per item
+    # Movies: TMDB trending, English only (no digital release check — trending
+    # shows what's popular right now, including theatrical releases)
     # TV: TMDB trending, English only
     for media_label, media_type, slot in [
         ("movies", "movie", "trending-movie"),
@@ -832,14 +833,17 @@ async def _generate_common_catalogs(
         try:
             all_results: list = []
             for time_window in ["day", "week"]:
-                data = (
-                    await tmdb_client.get_trending_movies(time_window)
-                    if media_type == "movie"
-                    else await tmdb_client.get_trending_tv_shows(time_window)
-                )
-                all_results.extend(data.get("results", []))
+                for page in range(1, 4):
+                    data = (
+                        await tmdb_client.get_trending_movies(time_window, page=page)
+                        if media_type == "movie"
+                        else await tmdb_client.get_trending_tv_shows(
+                            time_window, page=page
+                        )
+                    )
+                    all_results.extend(data.get("results", []))
             tmdb_ids = await _save_metadata_from_results(
-                all_results, media_type, check_digital=(media_type == "movie")
+                all_results, media_type, check_digital=False
             )
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
@@ -856,8 +860,10 @@ async def _generate_common_catalogs(
             logger.warning(f"  Trending ({media_label}) failed: {e}")
 
     # --- New Releases — last 90 days ---
-    # Movies: TMDB discover + verify US digital release per item
-    # TV: TMDB discover, English only, no anime keyword
+    # Movies: TMDB discover with US digital release in last 90 days.
+    # Using region=US + with_release_type=4 filters at the source, so
+    # release_date.gte/lte is scoped to the US digital release date.
+    # TV: TMDB discover by first_air_date, English only, no anime keyword.
     cutoff_90d = (datetime.utcnow() - timedelta(days=90)).strftime("%Y-%m-%d")
     today = datetime.utcnow().strftime("%Y-%m-%d")
     for media_label, media_type, slot in [
@@ -873,8 +879,10 @@ async def _generate_common_catalogs(
                         params={
                             "page": page,
                             "sort_by": "popularity.desc",
-                            "primary_release_date.gte": cutoff_90d,
-                            "primary_release_date.lte": today,
+                            "release_date.gte": cutoff_90d,
+                            "release_date.lte": today,
+                            "region": "US",
+                            "with_release_type": "4",
                             "with_original_language": "en",
                             "without_keywords": "210024",
                             "include_adult": False,
@@ -894,8 +902,9 @@ async def _generate_common_catalogs(
                         },
                     )
                 all_results.extend(data.get("results", []))
+            # TMDB already filtered to US digital/physical releases — no per-item check needed
             tmdb_ids = await _save_metadata_from_results(
-                all_results, media_type, check_digital=(media_type == "movie")
+                all_results, media_type, check_digital=False
             )
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
@@ -912,7 +921,7 @@ async def _generate_common_catalogs(
             logger.warning(f"  New Releases ({media_label}) failed: {e}")
 
     # --- Popular ---
-    # Movies: TMDB popular + verify US digital release per item
+    # Movies: TMDB discover — popular movies with US digital release
     # TV: TMDB popular, English only
     for media_label, media_type, slot in [
         ("movies", "movie", "popular-movie"),
@@ -920,15 +929,25 @@ async def _generate_common_catalogs(
     ]:
         try:
             all_results = []
-            for page in range(1, 3):
-                data = (
-                    await tmdb_client.get_popular_movies(page)
-                    if media_type == "movie"
-                    else await tmdb_client.get_popular_tv_shows(page)
-                )
+            for page in range(1, 4):
+                if media_type == "movie":
+                    data = await tmdb_client._request(
+                        "/discover/movie",
+                        params={
+                            "page": page,
+                            "sort_by": "popularity.desc",
+                            "region": "US",
+                            "with_release_type": "4",
+                            "with_original_language": "en",
+                            "without_keywords": "210024",
+                            "include_adult": False,
+                        },
+                    )
+                else:
+                    data = await tmdb_client.get_popular_tv_shows(page)
                 all_results.extend(data.get("results", []))
             tmdb_ids = await _save_metadata_from_results(
-                all_results, media_type, check_digital=(media_type == "movie")
+                all_results, media_type, check_digital=False
             )
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
