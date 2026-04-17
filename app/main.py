@@ -552,34 +552,7 @@ async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
 
     catalogs = []
 
-    # My Library — only show when the user has saved items of that type
-    library_types = {
-        r[0]
-        for r in db.query(LibraryItem.media_type)
-        .filter(LibraryItem.user_id == user.id)
-        .distinct()
-        .all()
-    }
-    if "movie" in library_types:
-        catalogs.append(
-            {
-                "id": "personal-library-movie",
-                "name": "My Library",
-                "type": "movie",
-                "extra": [{"name": "skip", "isRequired": False}],
-            }
-        )
-    if "tv" in library_types:
-        catalogs.append(
-            {
-                "id": "personal-library-series",
-                "name": "My Library",
-                "type": "series",
-                "extra": [{"name": "skip", "isRequired": False}],
-            }
-        )
-
-    # Personalized catalogs (like Netflix/Prime/HBO)
+    # Personalized catalogs FIRST (like Netflix/Prime/HBO)
     for catalog in user_catalogs:
         catalogs.append(
             {
@@ -905,7 +878,6 @@ def _shuffle_items(items: list, catalog_id: str) -> list:
         or "new-releases" in catalog_id
         or "popular-" in catalog_id
         or "up-next" in catalog_id
-        or "library-" in catalog_id
     ):
         return items
     seed = _get_shuffle_seed(catalog_id)
@@ -1177,32 +1149,6 @@ def catalog(
             user_taste_tag_ids=taste_tags,
             exclude_ids=exclude_ids,
         )
-    elif catalog_id in ("personal-library-movie", "personal-library-series"):
-        # Library is a direct DB lookup — no caching, no shuffling, freshest first
-        lib_media = "movie" if catalog_id == "personal-library-movie" else "tv"
-        rows = (
-            db.query(LibraryItem)
-            .filter(LibraryItem.user_id == user.id, LibraryItem.media_type == lib_media)
-            .order_by(LibraryItem.added_at.desc())
-            .all()
-        )
-        items = [
-            {
-                "tmdb_id": r.tmdb_id,
-                "media_type": r.media_type,
-                "title": r.title or f"TMDB {r.tmdb_id}",
-                "poster": r.poster_path,
-                "year": r.year or "",
-                "genres": [],
-                "rating": None,
-                "description": "",
-                "backdrop": None,
-                "imdb_id": None,
-                "logo": None,
-                "rank": idx,
-            }
-            for idx, r in enumerate(rows, start=1)
-        ]
     elif catalog_id.startswith("personal-"):
         actual_id = catalog_id.replace("personal-", "", 1)
 
