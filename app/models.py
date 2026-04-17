@@ -205,6 +205,9 @@ class User(Base):
     watch_progress = relationship(
         "WatchProgress", back_populates="user", cascade="all, delete-orphan"
     )
+    library_items = relationship(
+        "LibraryItem", back_populates="user", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("idx_active_sync", "is_active", "last_sync"),
@@ -471,6 +474,40 @@ class WatchProgress(Base):
             unique=False,
         ),
         Index("idx_progress_user_updated", "user_id", "updated_at"),
+    )
+
+
+class LibraryItem(Base):
+    """Items the user has saved to their personal library.
+
+    One row per (user, tmdb_id, media_type). Server is the source of
+    truth — clients pull from /library and push adds/removes back.
+    """
+
+    __tablename__ = "library_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    tmdb_id = Column(Integer, nullable=False)
+    media_type = Column(String(10), nullable=False)  # 'movie' or 'tv'
+
+    # Denormalized for offline display so the client doesn't need a
+    # second TMDB lookup just to render the library list.
+    title = Column(String(500), nullable=True)
+    poster_path = Column(String(255), nullable=True)
+    year = Column(String(8), nullable=True)
+
+    added_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", back_populates="library_items")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "tmdb_id", "media_type", name="uq_library_user_item"
+        ),
+        Index("idx_library_user_added", "user_id", "added_at"),
     )
 
 
