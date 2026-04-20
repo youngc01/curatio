@@ -361,6 +361,7 @@ async def sync_user_catalogs(
     user: User,
     db: Session,
     access_token: str,
+    common_data: "dict[str, list[int]] | None" = None,
 ) -> int:
     """
     Sync a single user's personalized catalogs from Trakt + tag DB.
@@ -491,7 +492,12 @@ async def sync_user_catalogs(
     # Steps 5-7: Trending/New Releases/Popular + backfill + commit
     # ------------------------------------------------------------------
     return await _generate_common_catalogs(
-        user, db, catalog_gen, catalogs_created, user.trakt_username or "trakt-user"
+        user,
+        db,
+        catalog_gen,
+        catalogs_created,
+        user.trakt_username or "trakt-user",
+        common_data=common_data,
     )
 
 
@@ -794,69 +800,63 @@ def _find_genre_taste_catalogs(
     return catalogs
 
 
-async def _generate_common_catalogs(
-    user: User,
-    db: Session,
-    catalog_gen: CatalogGenerator,
-    catalogs_created: int,
-    display: str,
-) -> int:
-    """Generate trending, new releases, and popular catalogs.
+async def _save_metadata_from_results(
+    db: Session, results: list, media_type: str
+) -> list[int]:
+    """Extract IDs and save metadata from TMDB list results.
 
-    Saves metadata inline from TMDB list responses so items have
-    titles/posters immediately — no separate backfill needed.
-    Shared by both the with-history and no-history paths.
+    Filters to English-language only. Uses selective non-null updates so
+    richer detail-level fields (imdb_id, logo) from prior backfills aren't
+    overwritten with None from list responses.
     """
-    from app.models import UserCatalog, UserCatalogContent
-
-    async def _save_metadata_from_results(results: list, media_type: str) -> list[int]:
-        """Extract IDs and save metadata from TMDB list results inline.
-
-        Filters to English-language only. Saves metadata using selective
-        updates so richer detail-level fields (imdb_id, logo) from prior
-        backfills aren't overwritten with None from list responses.
-        """
-        tmdb_ids: list[int] = []
-        for r in results:
-            if not r.get("id"):
-                continue
-            tid = r["id"]
-            if tid in tmdb_ids:
-                continue
-            if r.get("original_language") != "en":
-                continue
-            tmdb_ids.append(tid)
-            try:
-                meta_dict = tmdb_client.extract_metadata(
-                    r, media_type  # type: ignore[arg-type]
+    tmdb_ids: list[int] = []
+    for r in results:
+        if not r.get("id"):
+            continue
+        tid = r["id"]
+        if tid in tmdb_ids:
+            continue
+        if r.get("original_language") != "en":
+            continue
+        tmdb_ids.append(tid)
+        try:
+            meta_dict = tmdb_client.extract_metadata(
+                r, media_type  # type: ignore[arg-type]
+            )
+            existing = (
+                db.query(MediaMetadata)
+                .filter(
+                    MediaMetadata.tmdb_id == tid,
+                    MediaMetadata.media_type == media_type,
                 )
-                existing = (
-                    db.query(MediaMetadata)
-                    .filter(
-                        MediaMetadata.tmdb_id == tid,
-                        MediaMetadata.media_type == media_type,
-                    )
-                    .first()
-                )
-                if existing:
-                    for key, val in meta_dict.items():
-                        if val is not None:
-                            setattr(existing, key, val)
-                else:
-                    db.add(MediaMetadata(**meta_dict))
-            except Exception as e:
-                logger.debug(f"Metadata save failed for {media_type}/{tid}: {e}")
-        db.flush()
-        return tmdb_ids
+                .first()
+            )
+            if existing:
+                for key, val in meta_dict.items():
+                    if val is not None:
+                        setattr(existing, key, val)
+            else:
+                db.add(MediaMetadata(**meta_dict))
+        except Exception as e:
+            logger.debug(f"Metadata save failed for {media_type}/{tid}: {e}")
+    db.flush()
+    return tmdb_ids
 
-    # --- Trending Now ---
-    # Movies: TMDB trending, English only (no digital release check — trending
-    # shows what's popular right now, including theatrical releases)
-    # TV: TMDB trending, English only
-    for media_label, media_type, slot in [
-        ("movies", "movie", "trending-movie"),
-        ("shows", "tv", "trending-series"),
-    ]:
+
+async def _prefetch_common_catalog_data(db: Session) -> dict[str, list[int]]:
+    """Fetch trending/new releases/popular from TMDB once for all users.
+
+    Called once at the start of a bulk sync and shared across all users so
+    we make ~18 TMDB requests total instead of 18 × N (one set per user).
+    Returns a dict mapping slot_id → ordered list of tmdb_ids, with
+    MediaMetadata already saved/updated in the database.
+    """
+    result: dict[str, list[int]] = {}
+    cutoff_90d = (datetime.utcnow() - timedelta(days=90)).strftime("%Y-%m-%d")
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+
+    # Trending (day + week windows, 3 pages each)
+    for media_type, slot in [("movie", "trending-movie"), ("tv", "trending-series")]:
         try:
             all_results: list = []
             for time_window in ["day", "week"]:
@@ -869,31 +869,18 @@ async def _generate_common_catalogs(
                         )
                     )
                     all_results.extend(data.get("results", []))
-            tmdb_ids = await _save_metadata_from_results(all_results, media_type)
-            if tmdb_ids:
-                catalog_gen.save_user_catalog(
-                    user_id=user.id,
-                    slot_id=slot,
-                    name="Trending Now",
-                    media_type=media_type,
-                    tmdb_ids=tmdb_ids,
-                    generation_method="tmdb_trending",
-                )
-                catalogs_created += 1
-                logger.info(f"  Trending ({media_label}): {len(tmdb_ids)} items")
+            result[slot] = await _save_metadata_from_results(
+                db, all_results, media_type
+            )
+            logger.info(f"Prefetched {slot}: {len(result[slot])} items")
         except Exception as e:
-            logger.warning(f"  Trending ({media_label}) failed: {e}")
+            logger.warning(f"Prefetch {slot} failed: {e}")
+            result[slot] = []
 
-    # --- New Releases — last 90 days ---
-    # Movies: TMDB discover with US digital release in last 90 days.
-    # Using region=US + with_release_type=4 filters at the source, so
-    # release_date.gte/lte is scoped to the US digital release date.
-    # TV: TMDB discover by first_air_date, English only, no anime keyword.
-    cutoff_90d = (datetime.utcnow() - timedelta(days=90)).strftime("%Y-%m-%d")
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    for media_label, media_type, slot in [
-        ("movies", "movie", "new-releases-movie"),
-        ("shows", "tv", "new-releases-series"),
+    # New Releases — last 90 days, US digital release
+    for media_type, slot in [
+        ("movie", "new-releases-movie"),
+        ("tv", "new-releases-series"),
     ]:
         try:
             all_results = []
@@ -927,29 +914,16 @@ async def _generate_common_catalogs(
                         },
                     )
                 all_results.extend(data.get("results", []))
-            # TMDB already filtered to US digital/physical releases — no per-item check needed
-            tmdb_ids = await _save_metadata_from_results(all_results, media_type)
-            if tmdb_ids:
-                catalog_gen.save_user_catalog(
-                    user_id=user.id,
-                    slot_id=slot,
-                    name="New Releases",
-                    media_type=media_type,
-                    tmdb_ids=tmdb_ids,
-                    generation_method="tmdb_new_releases",
-                )
-                catalogs_created += 1
-                logger.info(f"  New Releases ({media_label}): {len(tmdb_ids)} items")
+            result[slot] = await _save_metadata_from_results(
+                db, all_results, media_type
+            )
+            logger.info(f"Prefetched {slot}: {len(result[slot])} items")
         except Exception as e:
-            logger.warning(f"  New Releases ({media_label}) failed: {e}")
+            logger.warning(f"Prefetch {slot} failed: {e}")
+            result[slot] = []
 
-    # --- Popular ---
-    # Movies: TMDB discover — popular movies with US digital release
-    # TV: TMDB popular, English only
-    for media_label, media_type, slot in [
-        ("movies", "movie", "popular-movie"),
-        ("shows", "tv", "popular-series"),
-    ]:
+    # Popular
+    for media_type, slot in [("movie", "popular-movie"), ("tv", "popular-series")]:
         try:
             all_results = []
             for page in range(1, 4):
@@ -969,20 +943,57 @@ async def _generate_common_catalogs(
                 else:
                     data = await tmdb_client.get_popular_tv_shows(page)
                 all_results.extend(data.get("results", []))
-            tmdb_ids = await _save_metadata_from_results(all_results, media_type)
-            if tmdb_ids:
-                catalog_gen.save_user_catalog(
-                    user_id=user.id,
-                    slot_id=slot,
-                    name="Popular",
-                    media_type=media_type,
-                    tmdb_ids=tmdb_ids,
-                    generation_method="tmdb_popular",
-                )
-                catalogs_created += 1
-                logger.info(f"  Popular ({media_label}): {len(tmdb_ids)} items")
+            result[slot] = await _save_metadata_from_results(
+                db, all_results, media_type
+            )
+            logger.info(f"Prefetched {slot}: {len(result[slot])} items")
         except Exception as e:
-            logger.warning(f"  Popular ({media_label}) failed: {e}")
+            logger.warning(f"Prefetch {slot} failed: {e}")
+            result[slot] = []
+
+    db.commit()
+    return result
+
+
+async def _generate_common_catalogs(
+    user: User,
+    db: Session,
+    catalog_gen: CatalogGenerator,
+    catalogs_created: int,
+    display: str,
+    common_data: "dict[str, list[int]] | None" = None,
+) -> int:
+    """Write pre-fetched common catalog data to a user's rows, then backfill and commit.
+
+    common_data comes from _prefetch_common_catalog_data() which is called
+    once per bulk sync run. If None (e.g. single-user refresh), fetches inline.
+    """
+    from app.models import UserCatalog, UserCatalogContent
+
+    if common_data is None:
+        common_data = await _prefetch_common_catalog_data(db)
+
+    catalog_configs = [
+        ("trending-movie", "Trending Now", "movie", "movies", "tmdb_trending"),
+        ("trending-series", "Trending Now", "tv", "shows", "tmdb_trending"),
+        ("new-releases-movie", "New Releases", "movie", "movies", "tmdb_new_releases"),
+        ("new-releases-series", "New Releases", "tv", "shows", "tmdb_new_releases"),
+        ("popular-movie", "Popular", "movie", "movies", "tmdb_popular"),
+        ("popular-series", "Popular", "tv", "shows", "tmdb_popular"),
+    ]
+    for slot, name, media_type, media_label, gen_method in catalog_configs:
+        tmdb_ids = common_data.get(slot, [])
+        if tmdb_ids:
+            catalog_gen.save_user_catalog(
+                user_id=user.id,
+                slot_id=slot,
+                name=name,
+                media_type=media_type,
+                tmdb_ids=tmdb_ids,
+                generation_method=gen_method,
+            )
+            catalogs_created += 1
+            logger.info(f"  {name} ({media_label}): {len(tmdb_ids)} items")
 
     # --- Backfill metadata for other user catalog items (BYW, recs, etc.) ---
     user_catalog_ids = [
@@ -1110,7 +1121,11 @@ async def _generate_discovery_catalogs(
     return catalogs_created
 
 
-async def sync_local_user_catalogs(user: User, db: Session) -> int:
+async def sync_local_user_catalogs(
+    user: User,
+    db: Session,
+    common_data: "dict[str, list[int]] | None" = None,
+) -> int:
     """Build personalized catalogs from local watch events (no Trakt).
 
     Mirrors sync_user_catalogs() but reads WatchEvent instead of Trakt API.
@@ -1171,7 +1186,7 @@ async def sync_local_user_catalogs(user: User, db: Session) -> int:
         )
         # Still generate trending + new releases below
         return await _generate_common_catalogs(
-            user, db, catalog_gen, catalogs_created, display
+            user, db, catalog_gen, catalogs_created, display, common_data=common_data
         )
 
     # ------------------------------------------------------------------
@@ -1369,10 +1384,10 @@ async def sync_local_user_catalogs(user: User, db: Session) -> int:
             logger.warning(f"  Hidden Gems ({media_label}) failed: {e}")
 
     # ------------------------------------------------------------------
-    # Steps 5-7: Trending/Top10/Popular + backfill + commit
+    # Steps 5-7: Trending/New Releases/Popular + backfill + commit
     # ------------------------------------------------------------------
     return await _generate_common_catalogs(
-        user, db, catalog_gen, catalogs_created, display
+        user, db, catalog_gen, catalogs_created, display, common_data=common_data
     )
 
 
@@ -1391,16 +1406,31 @@ async def sync_all_users(db: Session) -> Dict:
 
     logger.info(f"Starting Trakt sync for {len(users)} active users...")
 
+    # Fetch trending/new-releases/popular from TMDB once — shared across all users
+    # so we make ~18 TMDB requests total instead of 18 × N per-user requests.
+    logger.info(
+        "Pre-fetching common TMDB catalog data (trending, new releases, popular)..."
+    )
+    common_data = await _prefetch_common_catalog_data(db)
+    logger.info(
+        f"Pre-fetch complete: "
+        + ", ".join(f"{k}={len(v)}" for k, v in common_data.items())
+    )
+
     stats = {"total": len(users), "synced": 0, "failed": 0, "catalogs": 0}
 
     for user in users:
         try:
             auth_source = getattr(user, "auth_source", "trakt")
             if auth_source == "local":
-                count = await sync_local_user_catalogs(user, db)
+                count = await sync_local_user_catalogs(
+                    user, db, common_data=common_data
+                )
             else:
                 access_token = await ensure_valid_trakt_token(user, db)
-                count = await sync_user_catalogs(user, db, access_token)
+                count = await sync_user_catalogs(
+                    user, db, access_token, common_data=common_data
+                )
             stats["synced"] += 1
             stats["catalogs"] += count
         except Exception as e:
