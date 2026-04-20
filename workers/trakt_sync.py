@@ -17,6 +17,7 @@ Only digitally-released content — no anticipated/unreleased titles.
 """
 
 import asyncio
+import random
 from datetime import datetime, timedelta
 from typing import List, Dict, Set
 
@@ -58,6 +59,14 @@ MAX_BYW_SEEDS = 5  # max "Because You Watched" seed items per user
 TASTE_TOP_N_TAGS = 15  # top N tags used when building a taste profile
 BYW_CANDIDATE_HISTORY = 50  # recent watch events to consider for BYW seeds
 TMDB_DISCOVER_PAGES = 3  # pages fetched per discover/trending call
+TASTE_CATALOG_POOL = 20  # genre/mood tags to fetch before rotating
+
+
+def _daily_rng(user_id: int = 0) -> random.Random:
+    """Return an RNG seeded by today's date + user_id for daily rotation."""
+    seed = datetime.utcnow().strftime("%Y-%m-%d") + str(user_id)
+    return random.Random(seed)
+
 
 # ---------------------------------------------------------------------------
 # Catalog slot ordering — controls row order in Stremio (lower = higher up)
@@ -198,9 +207,25 @@ def find_similar_by_tags(
 
     results = query.all()
 
-    # Filter out excluded IDs and trim to limit
-    tmdb_ids = [r.tmdb_id for r in results if r.tmdb_id not in exclude_ids]
-    return tmdb_ids[:limit]
+    filtered = [r for r in results if r.tmdb_id not in exclude_ids]
+
+    # Shuffle within same-tag-count tiers for daily variety
+    rng = _daily_rng()
+    tiered: List[int] = []
+    current_tier: List = []
+    current_count = None
+    for r in filtered:
+        if r.matching_tags != current_count:
+            rng.shuffle(current_tier)
+            tiered.extend(x.tmdb_id for x in current_tier)
+            current_tier = [r]
+            current_count = r.matching_tags
+        else:
+            current_tier.append(r)
+    rng.shuffle(current_tier)
+    tiered.extend(x.tmdb_id for x in current_tier)
+
+    return tiered[:limit]
 
 
 def build_taste_profile(
@@ -270,6 +295,7 @@ def find_recommendations_by_taste(
         logger.debug(f"No taste profile for {media_type} — skipping tag recs")
         return []
 
+    # Over-fetch to allow shuffling within tiers
     results = (
         db.query(
             MovieTag.tmdb_id,
@@ -286,11 +312,27 @@ def find_recommendations_by_taste(
             func.count(MovieTag.tag_id).desc(),
             func.avg(MovieTag.confidence).desc(),
         )
-        .limit(limit)
+        .limit(limit * 2)
         .all()
     )
 
-    return [r.tmdb_id for r in results]
+    # Shuffle within same-tag-count tiers for daily variety
+    rng = _daily_rng()
+    tiered: List[int] = []
+    current_tier: List = []
+    current_count = None
+    for r in results:
+        if r.matching_tags != current_count:
+            rng.shuffle(current_tier)
+            tiered.extend(x.tmdb_id for x in current_tier)
+            current_tier = [r]
+            current_count = r.matching_tags
+        else:
+            current_tier.append(r)
+    rng.shuffle(current_tier)
+    tiered.extend(x.tmdb_id for x in current_tier)
+
+    return tiered[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +494,11 @@ async def sync_user_catalogs(
     recent_history = await trakt_client.get_user_history(access_token, limit=50)
 
     byw_seeds = _pick_byw_seeds(
-        db, recent_history, watched_movie_ids | watched_show_ids, max_seeds=5
+        db,
+        recent_history,
+        watched_movie_ids | watched_show_ids,
+        max_seeds=5,
+        user_id=user.id,
     )
 
     for i, seed in enumerate(byw_seeds):
@@ -529,15 +575,14 @@ def _pick_byw_seeds(
     recent_history: List[Dict],
     all_watched_ids: Set[int],
     max_seeds: int = 3,
+    user_id: int = 0,
 ) -> List[Dict]:
-    """
-    Pick the best seed items for 'Because You Watched' catalogs.
+    """Pick seed items for 'Because You Watched' catalogs.
 
-    Selects recently watched items that exist in our tag database,
-    preferring items with more tags (= richer recommendations).
+    Collects all recent items with tags, then rotates the selection daily
+    so users don't always see the same BYW rows.
     """
     seen_ids: Set[int] = set()
-    seeds: List[Dict] = []
     candidates: List[Dict] = []
 
     for item in recent_history:
@@ -566,7 +611,7 @@ def _pick_byw_seeds(
             }
         )
 
-    # Batch tag-count query instead of per-item queries
+    seeds: List[Dict] = []
     if candidates:
         candidate_pairs = [(c["tmdb_id"], c["media_type"]) for c in candidates]
         tag_counts_rows = (
@@ -577,19 +622,26 @@ def _pick_byw_seeds(
         )
         tag_counts = {(r[0], r[1]): r[2] for r in tag_counts_rows}
 
-        for c in candidates:
-            tc = tag_counts.get((c["tmdb_id"], c["media_type"]), 0)
-            if tc > 0:
-                seeds.append(
-                    {
-                        "title": c["title"],
-                        "tmdb_id": c["tmdb_id"],
-                        "media_type": c["media_type"],
-                        "tag_count": tc,
-                    }
-                )
-                if len(seeds) >= max_seeds:
-                    break
+        tagged = [
+            {
+                "title": c["title"],
+                "tmdb_id": c["tmdb_id"],
+                "media_type": c["media_type"],
+                "tag_count": tag_counts.get((c["tmdb_id"], c["media_type"]), 0),
+            }
+            for c in candidates
+            if tag_counts.get((c["tmdb_id"], c["media_type"]), 0) > 0
+        ]
+
+        if len(tagged) > max_seeds:
+            # Keep top seed stable, rotate the rest daily
+            tagged.sort(key=lambda x: -x["tag_count"])
+            rng = _daily_rng(user_id)
+            rest = tagged[1:]
+            rng.shuffle(rest)
+            seeds = [tagged[0]] + rest[: max_seeds - 1]
+        else:
+            seeds = tagged
 
     logger.info(f"Selected {len(seeds)} BYW seeds: {[s['title'] for s in seeds]}")
     return seeds
@@ -673,22 +725,26 @@ def _pick_byw_seeds_local(
             )
             title_map = {(r.tmdb_id, r.media_type): r.title for r in title_rows}
 
-        for c in candidates:
-            tc = tag_counts.get((c["tmdb_id"], c["media_type"]), 0)
-            if tc > 0:
-                title = c["title"] or title_map.get(
-                    (c["tmdb_id"], c["media_type"]), "Unknown"
-                )
-                seeds.append(
-                    {
-                        "title": title,
-                        "tmdb_id": c["tmdb_id"],
-                        "media_type": c["media_type"],
-                        "tag_count": tc,
-                    }
-                )
-                if len(seeds) >= max_seeds:
-                    break
+        tagged = [
+            {
+                "title": c["title"]
+                or title_map.get((c["tmdb_id"], c["media_type"]), "Unknown"),
+                "tmdb_id": c["tmdb_id"],
+                "media_type": c["media_type"],
+                "tag_count": tag_counts.get((c["tmdb_id"], c["media_type"]), 0),
+            }
+            for c in candidates
+            if tag_counts.get((c["tmdb_id"], c["media_type"]), 0) > 0
+        ]
+
+        if len(tagged) > max_seeds:
+            tagged.sort(key=lambda x: -x["tag_count"])
+            rng = _daily_rng(user_id)
+            rest = tagged[1:]
+            rng.shuffle(rest)
+            seeds = [tagged[0]] + rest[: max_seeds - 1]
+        else:
+            seeds = tagged
 
     logger.info(f"Selected {len(seeds)} local BYW seeds: {[s['title'] for s in seeds]}")
     return seeds
@@ -728,11 +784,29 @@ def _find_hidden_gems_by_taste(
             func.count(func.distinct(MovieTag.tag_id)).desc(),
             func.avg(MovieTag.confidence).desc(),
         )
-        .limit(limit + len(exclude_ids))
+        .limit((limit + len(exclude_ids)) * 2)
         .all()
     )
 
-    return [r.tmdb_id for r in results if r.tmdb_id not in exclude_ids][:limit]
+    filtered = [r for r in results if r.tmdb_id not in exclude_ids]
+
+    # Shuffle within same-tag-count tiers for daily variety
+    rng = _daily_rng()
+    tiered: List[int] = []
+    current_tier: List = []
+    current_count = None
+    for r in filtered:
+        if r.tag_hits != current_count:
+            rng.shuffle(current_tier)
+            tiered.extend(x.tmdb_id for x in current_tier)
+            current_tier = [r]
+            current_count = r.tag_hits
+        else:
+            current_tier.append(r)
+    rng.shuffle(current_tier)
+    tiered.extend(x.tmdb_id for x in current_tier)
+
+    return tiered[:limit]
 
 
 def _find_genre_taste_catalogs(
@@ -742,15 +816,19 @@ def _find_genre_taste_catalogs(
     exclude_ids: Set[int],
     max_catalogs: int = 4,
     limit: int = 100,
+    user_id: int = 0,
 ) -> List[Dict]:
     """Generate genre/mood-specific taste catalogs.
+
+    Fetches a pool of candidate tags and rotates the selection daily so
+    users see different genre/mood rows each sync.
 
     Returns a list of dicts with keys: slot_id, name, media_type, tmdb_ids.
     """
     if not taste_tag_ids or not all_watched_ids:
         return []
 
-    # Find user's top genre and mood tags from their watched items
+    # Fetch a larger pool of genre/mood tags to rotate through
     top_tags = (
         db.query(
             Tag.id,
@@ -765,20 +843,31 @@ def _find_genre_taste_catalogs(
         )
         .group_by(Tag.id, Tag.name, Tag.category)
         .order_by(func.count().desc())
-        .limit(10)
+        .limit(TASTE_CATALOG_POOL)
         .all()
     )
 
-    # Pick top 2 genre + top 2 mood tags
-    genres = [t for t in top_tags if t.category == "genre"][:2]
-    moods = [t for t in top_tags if t.category == "mood"][:2]
-    selected = genres + moods
+    genres = [t for t in top_tags if t.category == "genre"]
+    moods = [t for t in top_tags if t.category == "mood"]
+
+    rng = _daily_rng(user_id)
+
+    # Pick 2 genre + 2 mood, rotated daily — always keep #1 for continuity,
+    # shuffle the rest to pick the second slot
+    def _pick_two(pool: list) -> list:
+        if len(pool) <= 2:
+            return pool
+        first = pool[0]
+        rest = pool[1:]
+        rng.shuffle(rest)
+        return [first, rest[0]]
+
+    selected = _pick_two(genres) + _pick_two(moods)
 
     catalogs: List[Dict] = []
     taste_set = set(taste_tag_ids)
 
     for i, tag_row in enumerate(selected[:max_catalogs]):
-        # Find items with this specific tag + at least 1 other taste tag
         results = (
             db.query(
                 MovieTag.tmdb_id,
@@ -796,28 +885,42 @@ def _find_genre_taste_catalogs(
                 func.count(func.distinct(MovieTag.tag_id)).desc(),
                 func.avg(MovieTag.confidence).desc(),
             )
-            .limit(limit)
+            .limit(limit * 2)
             .all()
         )
 
         if not results:
             continue
 
-        # Determine dominant media type from results
         movie_count = sum(1 for r in results if r.media_type == "movie")
         tv_count = sum(1 for r in results if r.media_type == "tv")
         media_type = "movie" if movie_count >= tv_count else "tv"
 
-        tmdb_ids = [r.tmdb_id for r in results if r.media_type == media_type]
-        if not tmdb_ids:
-            tmdb_ids = [r.tmdb_id for r in results][:limit]
+        typed = [r for r in results if r.media_type == media_type]
+        if not typed:
+            typed = results
+
+        # Shuffle within same-tag-count tiers
+        tiered: List[int] = []
+        current_tier: List = []
+        current_count = None
+        for r in typed:
+            if r.tag_hits != current_count:
+                rng.shuffle(current_tier)
+                tiered.extend(x.tmdb_id for x in current_tier)
+                current_tier = [r]
+                current_count = r.tag_hits
+            else:
+                current_tier.append(r)
+        rng.shuffle(current_tier)
+        tiered.extend(x.tmdb_id for x in current_tier)
 
         catalogs.append(
             {
                 "slot_id": f"taste-{i}",
                 "name": f"{tag_row.name} For You",
                 "media_type": media_type,
-                "tmdb_ids": tmdb_ids[:limit],
+                "tmdb_ids": tiered[:limit],
             }
         )
 
@@ -1395,6 +1498,7 @@ async def sync_local_user_catalogs(
             exclude_ids=all_movie_ids | all_show_ids,
             max_catalogs=4,
             limit=100,
+            user_id=user.id,
         )
         for tc in taste_catalogs:
             catalog_gen.save_user_catalog(
