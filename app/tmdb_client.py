@@ -76,6 +76,14 @@ class TMDBClient:
             timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=15.0),
             limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
         )
+        self._stats: Dict = {
+            "total_calls": 0,
+            "errors_4xx": 0,
+            "errors_5xx": 0,
+            "errors_network": 0,
+            "last_call_at": None,
+            "last_error": None,
+        }
 
     async def close(self):
         """Close HTTP client."""
@@ -104,6 +112,8 @@ class TMDBClient:
 
         url = f"{self.BASE_URL}{endpoint}"
 
+        self._stats["total_calls"] += 1
+        self._stats["last_call_at"] = datetime.utcnow().isoformat()
         try:
             response = await self.client.get(url, params=params)
             response.raise_for_status()
@@ -111,12 +121,18 @@ class TMDBClient:
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
             if status >= 500:
+                self._stats["errors_5xx"] += 1
+                self._stats["last_error"] = f"{status} on {endpoint}"
                 raise TMDBServerError(
                     f"TMDB server error {status} on {endpoint}"
                 ) from e
+            self._stats["errors_4xx"] += 1
+            self._stats["last_error"] = f"{status} on {endpoint}"
             logger.error(f"TMDB API error: {status} - {e.response.text}")
             raise
         except Exception as e:
+            self._stats["errors_network"] += 1
+            self._stats["last_error"] = str(e)[:120]
             logger.error(f"TMDB request failed: {e}")
             raise
 

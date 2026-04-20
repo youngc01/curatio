@@ -1427,6 +1427,83 @@ async def active_streams(request: Request, _=Depends(verify_admin)):
     }
 
 
+@router.get("/api/system-metrics")
+async def system_metrics(request: Request, _=Depends(verify_admin)):
+    """Real-time system metrics: caches, TMDB API stats, sync status."""
+    from app.main import (
+        _catalog_cache,
+        _user_cache,
+        _CACHE_MAX_ENTRIES,
+        _USER_CACHE_MAX,
+    )
+    from app.tmdb_client import tmdb_client
+    from workers.trakt_sync import sync_status
+
+    meta_cache_size = 0
+    meta_cache_max = 512
+    stream_cache_size = 0
+    stream_cache_max = 500
+    try:
+        from app.main import _meta_cache, _META_CACHE_MAX
+
+        meta_cache_size = len(_meta_cache)
+        meta_cache_max = _META_CACHE_MAX
+    except ImportError:
+        pass
+    try:
+        from app.stream_proxy import _stream_cache, _STREAM_CACHE_MAX
+
+        stream_cache_size = len(_stream_cache)
+        stream_cache_max = _STREAM_CACHE_MAX
+    except ImportError:
+        pass
+
+    with get_db() as db:
+        user_sync_rows = (
+            db.query(
+                User.id,
+                User.trakt_username,
+                User.display_name,
+                User.user_key,
+                User.last_sync,
+                User.is_active,
+            )
+            .filter(User.is_active.is_(True))
+            .all()
+        )
+        user_sync = []
+        now = datetime.utcnow()
+        for u in user_sync_rows:
+            name = u.trakt_username or u.display_name or u.user_key[:8]
+            ago = int((now - u.last_sync).total_seconds()) if u.last_sync else None
+            catalog_count = (
+                db.query(func.count(UserCatalog.id))
+                .filter(UserCatalog.user_id == u.id, UserCatalog.is_active.is_(True))
+                .scalar()
+                or 0
+            )
+            user_sync.append(
+                {
+                    "name": name,
+                    "last_sync": u.last_sync.isoformat() if u.last_sync else None,
+                    "ago_seconds": ago,
+                    "catalogs": catalog_count,
+                }
+            )
+
+    return {
+        "caches": {
+            "catalog": {"size": len(_catalog_cache), "max": _CACHE_MAX_ENTRIES},
+            "user": {"size": len(_user_cache), "max": _USER_CACHE_MAX},
+            "meta": {"size": meta_cache_size, "max": meta_cache_max},
+            "stream": {"size": stream_cache_size, "max": stream_cache_max},
+        },
+        "tmdb": tmdb_client._stats,
+        "sync": sync_status,
+        "user_sync": user_sync,
+    }
+
+
 # ---- HTML Page ----
 
 
@@ -1483,6 +1560,36 @@ a{color:#58a6ff;text-decoration:none}
 .stat-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:24px}
 .stat-value{font-size:32px;font-weight:700;color:#e6edf3;margin-bottom:4px}
 .stat-label{font-size:13px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px}
+.stat-sub{font-size:11px;color:#8b949e;margin-top:4px}
+
+/* Status indicators */
+.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:32px}
+.status-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px;display:flex;align-items:center;gap:16px}
+.status-dot{width:12px;height:12px;border-radius:50%;flex-shrink:0}
+.status-dot.green{background:#3fb950;box-shadow:0 0 6px #3fb95066}
+.status-dot.yellow{background:#d29922;box-shadow:0 0 6px #d2992266}
+.status-dot.red{background:#f85149;box-shadow:0 0 6px #f8514966}
+.status-dot.blue{background:#58a6ff;box-shadow:0 0 6px #58a6ff66;animation:pulse 2s infinite}
+.status-info{flex:1;min-width:0}
+.status-title{font-size:14px;font-weight:600;color:#e6edf3}
+.status-detail{font-size:12px;color:#8b949e;margin-top:2px}
+
+/* Cache bars */
+.cache-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:24px}
+.cache-item{display:flex;align-items:center;gap:12px}
+.cache-label{font-size:13px;color:#8b949e;width:70px;flex-shrink:0}
+.cache-bar-bg{flex:1;height:8px;background:#21262d;border-radius:4px;overflow:hidden}
+.cache-bar-fill{height:100%;border-radius:4px;transition:width .5s}
+.cache-pct{font-size:12px;color:#8b949e;width:80px;text-align:right;flex-shrink:0}
+
+/* Sync health table */
+.sync-health td,.sync-health th{padding:8px 12px;font-size:13px}
+.sync-badge{padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500}
+.sync-ok{background:#23863533;color:#3fb950}
+.sync-stale{background:#d2992233;color:#d29922}
+.sync-never{background:#f8514933;color:#f85149}
+
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 
 /* Cards */
 .card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:24px;margin-bottom:24px}
@@ -1679,6 +1786,40 @@ tr:last-child td{border-bottom:none}
 
     <!-- OVERVIEW TAB -->
     <div class="tab-panel active" id="tab-overview">
+
+      <!-- System Status -->
+      <div class="status-grid" id="system-status">
+        <div class="status-card">
+          <div class="status-dot green" id="dot-tmdb"></div>
+          <div class="status-info">
+            <div class="status-title">TMDB API</div>
+            <div class="status-detail" id="status-tmdb">Loading...</div>
+          </div>
+        </div>
+        <div class="status-card">
+          <div class="status-dot green" id="dot-sync"></div>
+          <div class="status-info">
+            <div class="status-title">Catalog Sync</div>
+            <div class="status-detail" id="status-sync">Loading...</div>
+          </div>
+        </div>
+        <div class="status-card">
+          <div class="status-dot green" id="dot-streams"></div>
+          <div class="status-info">
+            <div class="status-title">Active Streams</div>
+            <div class="status-detail" id="status-streams">Loading...</div>
+          </div>
+        </div>
+        <div class="status-card">
+          <div class="status-dot green" id="dot-db"></div>
+          <div class="status-info">
+            <div class="status-title">Database</div>
+            <div class="status-detail" id="status-db">Loading...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Content stats -->
       <div class="stats-grid">
         <div class="stat-card">
           <div class="stat-value" id="stat-movies">-</div>
@@ -1706,6 +1847,57 @@ tr:last-child td{border-bottom:none}
         </div>
       </div>
 
+      <!-- TMDB API & Caches side-by-side -->
+      <div class="card-row">
+        <div class="card">
+          <h3>TMDB API Usage</h3>
+          <div class="stats-grid" style="grid-template-columns:1fr 1fr;margin-bottom:12px">
+            <div style="text-align:center">
+              <div style="font-size:28px;font-weight:700;color:#e6edf3" id="tmdb-total-calls">-</div>
+              <div style="font-size:12px;color:#8b949e">Total Calls</div>
+            </div>
+            <div style="text-align:center">
+              <div style="font-size:28px;font-weight:700" id="tmdb-error-count" style="color:#e6edf3">-</div>
+              <div style="font-size:12px;color:#8b949e">Errors</div>
+            </div>
+          </div>
+          <div style="font-size:12px;color:#8b949e">
+            <div style="margin-bottom:4px">4xx: <span id="tmdb-4xx">0</span> &nbsp; 5xx: <span id="tmdb-5xx">0</span> &nbsp; Network: <span id="tmdb-net">0</span></div>
+            <div>Last call: <span id="tmdb-last-call">-</span></div>
+            <div>Last error: <span id="tmdb-last-error" style="color:#f85149">-</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Cache Utilization</h3>
+          <div class="cache-grid" style="grid-template-columns:1fr">
+            <div class="cache-item"><span class="cache-label">Catalog</span><div class="cache-bar-bg"><div class="cache-bar-fill" id="cache-bar-catalog" style="width:0%;background:#a855f7"></div></div><span class="cache-pct" id="cache-pct-catalog">-</span></div>
+            <div class="cache-item"><span class="cache-label">User</span><div class="cache-bar-bg"><div class="cache-bar-fill" id="cache-bar-user" style="width:0%;background:#58a6ff"></div></div><span class="cache-pct" id="cache-pct-user">-</span></div>
+            <div class="cache-item"><span class="cache-label">Meta</span><div class="cache-bar-bg"><div class="cache-bar-fill" id="cache-bar-meta" style="width:0%;background:#3fb950"></div></div><span class="cache-pct" id="cache-pct-meta">-</span></div>
+            <div class="cache-item"><span class="cache-label">Stream</span><div class="cache-bar-bg"><div class="cache-bar-fill" id="cache-bar-stream" style="width:0%;background:#d29922"></div></div><span class="cache-pct" id="cache-pct-stream">-</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sync Status -->
+      <div class="card">
+        <h3>Sync Status</h3>
+        <div id="sync-status-content" style="margin-bottom:16px">
+          <span style="color:#8b949e;font-size:13px">Loading...</span>
+        </div>
+        <div id="sync-prefetch-content"></div>
+      </div>
+
+      <!-- User Sync Health -->
+      <div class="card">
+        <h3>User Sync Health</h3>
+        <table class="sync-health">
+          <thead><tr><th>User</th><th>Last Sync</th><th>Catalogs</th><th>Status</th></tr></thead>
+          <tbody id="user-sync-tbody"><tr><td colspan="4" style="color:#8b949e">Loading...</td></tr></tbody>
+        </table>
+      </div>
+
+      <!-- Recent Jobs -->
       <div class="card">
         <h3>Recent Jobs</h3>
         <table>
@@ -1758,7 +1950,7 @@ tr:last-child td{border-bottom:none}
         </p>
         <div style="overflow-x:auto">
         <table>
-          <thead><tr><th>User</th><th>Email</th><th>Source</th><th>2FA</th><th>Admin</th><th>Bandwidth</th><th>Status</th><th>Created</th><th>Last Login</th><th>Catalogs</th><th>Actions</th></tr></thead>
+          <thead><tr><th>User</th><th>Email</th><th>Source</th><th>2FA</th><th>Admin</th><th>Bandwidth</th><th>Status</th><th>Created</th><th>Last Sync</th><th>Catalogs</th><th>Actions</th></tr></thead>
           <tbody id="users-tbody"><tr><td colspan="11" style="color:#8b949e">Loading...</td></tr></tbody>
         </table>
         </div>
@@ -2100,6 +2292,16 @@ function fmtDuration(secs) {
   return Math.floor(secs/3600) + 'h ' + Math.floor((secs%3600)/60) + 'm';
 }
 
+function fmtAgo(iso) {
+  if (!iso) return '-';
+  var d = new Date(iso + 'Z');
+  var secs = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (secs < 60) return secs + 's ago';
+  if (secs < 3600) return Math.floor(secs / 60) + 'm ago';
+  if (secs < 86400) return Math.floor(secs / 3600) + 'h ago';
+  return Math.floor(secs / 86400) + 'd ago';
+}
+
 function badge(status) {
   const cls = status === 'running' ? 'badge-running' : status === 'completed' ? 'badge-completed' : 'badge-failed';
   const label = status === 'cancelled' ? 'cancelled' : status;
@@ -2208,7 +2410,7 @@ async function checkAuth() {
 
 // ---- Data Loading ----
 async function loadAll() {
-  await Promise.all([loadStats(), loadSettings(), loadBuildStatus(), loadInvites(), loadUsers(), loadSessions(), loadActiveStreams(), loadAIOStreams()]);
+  await Promise.all([loadStats(), loadSystemMetrics(), loadSettings(), loadBuildStatus(), loadInvites(), loadUsers(), loadSessions(), loadActiveStreams(), loadAIOStreams()]);
   // If a build is running, start polling logs automatically
   try {
     const s = await api('GET', '/admin/api/build/status');
@@ -2246,6 +2448,137 @@ async function loadStats() {
     ).join('') || '<tr><td colspan="7" style="color:#8b949e">No jobs yet</td></tr>';
     document.getElementById('build-jobs-tbody').innerHTML = detailHtml;
   } catch(e) { if (e.message !== 'auth') console.error(e); }
+}
+
+async function loadSystemMetrics() {
+  try {
+    var m = await api('GET', '/admin/api/system-metrics');
+
+    // TMDB API stats
+    var t = m.tmdb;
+    var totalErrors = (t.errors_4xx || 0) + (t.errors_5xx || 0) + (t.errors_network || 0);
+    document.getElementById('tmdb-total-calls').textContent = fmtNum(t.total_calls);
+    document.getElementById('tmdb-error-count').textContent = fmtNum(totalErrors);
+    document.getElementById('tmdb-error-count').style.color = totalErrors > 0 ? '#f85149' : '#e6edf3';
+    document.getElementById('tmdb-4xx').textContent = fmtNum(t.errors_4xx);
+    document.getElementById('tmdb-5xx').textContent = fmtNum(t.errors_5xx);
+    document.getElementById('tmdb-net').textContent = fmtNum(t.errors_network);
+    document.getElementById('tmdb-last-call').textContent = t.last_call_at ? fmtAgo(t.last_call_at) : 'None';
+    document.getElementById('tmdb-last-error').textContent = t.last_error || 'None';
+
+    // TMDB status dot
+    var tmdbDot = document.getElementById('dot-tmdb');
+    var tmdbDetail = document.getElementById('status-tmdb');
+    if (t.errors_5xx > 0 || t.errors_network > 5) {
+      tmdbDot.className = 'status-dot red';
+      tmdbDetail.textContent = totalErrors + ' errors / ' + fmtNum(t.total_calls) + ' calls';
+    } else if (totalErrors > 0) {
+      tmdbDot.className = 'status-dot yellow';
+      tmdbDetail.textContent = fmtNum(t.total_calls) + ' calls, ' + totalErrors + ' minor errors';
+    } else {
+      tmdbDot.className = 'status-dot green';
+      tmdbDetail.textContent = fmtNum(t.total_calls) + ' calls, no errors';
+    }
+
+    // Sync status
+    var s = m.sync;
+    var syncDot = document.getElementById('dot-sync');
+    var syncDetail = document.getElementById('status-sync');
+    var syncContent = document.getElementById('sync-status-content');
+    var prefetchContent = document.getElementById('sync-prefetch-content');
+
+    if (s.running) {
+      syncDot.className = 'status-dot blue';
+      syncDetail.textContent = 'Running: ' + s.users_done + '/' + s.users_total + ' users';
+      var pct = s.users_total > 0 ? Math.round((s.users_done / s.users_total) * 100) : 0;
+      syncContent.innerHTML =
+        '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">' +
+          '<div style="flex:1;height:8px;background:#21262d;border-radius:4px;overflow:hidden"><div style="height:100%;background:#a855f7;border-radius:4px;width:' + pct + '%;transition:width .5s"></div></div>' +
+          '<span style="font-size:13px;color:#e6edf3;font-weight:600">' + pct + '%</span>' +
+        '</div>' +
+        '<div style="font-size:13px;color:#8b949e">' +
+          'Syncing: <strong style="color:#e6edf3">' + (s.current_user || '...') + '</strong> &mdash; ' +
+          s.users_done + ' of ' + s.users_total + ' users complete' +
+          (s.home_release_filtered > 0 ? ' &mdash; ' + s.home_release_filtered + ' theatrical-only filtered' : '') +
+          (s.last_error ? '<div style="color:#f85149;margin-top:4px">Last error: ' + s.last_error + '</div>' : '') +
+        '</div>';
+    } else {
+      syncDot.className = 'status-dot green';
+      syncDetail.textContent = s.completed_at ? 'Last: ' + fmtAgo(s.completed_at) : 'Idle';
+      var idleHtml = '<div style="font-size:13px;color:#8b949e">';
+      if (s.completed_at) {
+        idleHtml += 'Last sync completed ' + fmtAgo(s.completed_at);
+        if (s.home_release_filtered > 0) idleHtml += ' &mdash; ' + s.home_release_filtered + ' theatrical-only movies filtered';
+      } else {
+        idleHtml += 'No sync has run yet';
+      }
+      if (s.last_error) idleHtml += '<div style="color:#f85149;margin-top:4px">Last error: ' + s.last_error + '</div>';
+      idleHtml += '</div>';
+      syncContent.innerHTML = idleHtml;
+    }
+
+    // Prefetch counts
+    if (s.prefetch_counts && Object.keys(s.prefetch_counts).length > 0) {
+      var pHtml = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">';
+      Object.entries(s.prefetch_counts).forEach(function(kv) {
+        pHtml += '<span style="background:#21262d;padding:4px 10px;border-radius:6px;font-size:12px;color:#e6edf3">' + kv[0] + ': <strong>' + kv[1] + '</strong></span>';
+      });
+      pHtml += '</div>';
+      prefetchContent.innerHTML = pHtml;
+    } else {
+      prefetchContent.innerHTML = '';
+    }
+
+    // Cache bars
+    var caches = m.caches;
+    ['catalog', 'user', 'meta', 'stream'].forEach(function(name) {
+      var c = caches[name];
+      var pct = c.max > 0 ? Math.round((c.size / c.max) * 100) : 0;
+      document.getElementById('cache-bar-' + name).style.width = pct + '%';
+      document.getElementById('cache-pct-' + name).textContent = c.size + ' / ' + c.max;
+    });
+
+    // Streams status
+    try {
+      var streamData = await api('GET', '/admin/api/active-streams');
+      var streamCount = streamData.streams.length;
+      var streamDot = document.getElementById('dot-streams');
+      document.getElementById('status-streams').textContent = streamCount + ' active';
+      streamDot.className = 'status-dot ' + (streamCount > 0 ? 'green' : 'green');
+    } catch(e) { /* ignore */ }
+
+    // DB status
+    document.getElementById('dot-db').className = 'status-dot green';
+    document.getElementById('status-db').textContent = fmtNum(m.caches.meta.size) + ' metadata cached';
+
+    // User sync health table
+    var userSync = m.user_sync || [];
+    var tbody = document.getElementById('user-sync-tbody');
+    if (userSync.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" style="color:#8b949e">No active users</td></tr>';
+    } else {
+      tbody.innerHTML = userSync.map(function(u) {
+        var statusBadge, statusClass;
+        if (!u.last_sync) {
+          statusBadge = 'Never synced';
+          statusClass = 'sync-never';
+        } else if (u.ago_seconds > 86400) {
+          statusBadge = 'Stale';
+          statusClass = 'sync-stale';
+        } else {
+          statusBadge = 'OK';
+          statusClass = 'sync-ok';
+        }
+        return '<tr>' +
+          '<td><strong>' + u.name + '</strong></td>' +
+          '<td>' + (u.last_sync ? fmtAgo(u.last_sync) : '-') + '</td>' +
+          '<td>' + u.catalogs + '</td>' +
+          '<td><span class="sync-badge ' + statusClass + '">' + statusBadge + '</span></td>' +
+          '</tr>';
+      }).join('');
+    }
+
+  } catch(e) { if (e.message !== 'auth') console.error('System metrics:', e); }
 }
 
 async function loadSettings() {
@@ -2709,7 +3042,7 @@ async function loadUsers() {
         '<td>' + bwSelect + '</td>' +
         '<td>' + status + '</td>' +
         '<td>' + fmtDate(u.created_at) + '</td>' +
-        '<td>' + fmtDate(u.last_login) + '</td>' +
+        '<td>' + (u.last_sync ? fmtAgo(u.last_sync) : '<span style="color:#f85149">Never</span>') + '</td>' +
         '<td>' + u.catalog_count + '</td>' +
         '<td style="white-space:nowrap">' + actions + '</td>' +
         '</tr>';
@@ -2869,7 +3202,8 @@ async function loadActiveStreams() {
   } catch(e) { if (e.message !== 'auth') console.error(e); }
 }
 
-// Auto-refresh streams tab when visible
+// Auto-refresh active tabs
+var _overviewRefreshTimer = null;
 document.querySelectorAll('.tab-btn').forEach(function(btn) {
   btn.addEventListener('click', function() {
     if (btn.dataset.tab === 'streams') {
@@ -2878,8 +3212,16 @@ document.querySelectorAll('.tab-btn').forEach(function(btn) {
     } else {
       if (_streamRefreshTimer) { clearInterval(_streamRefreshTimer); _streamRefreshTimer = null; }
     }
+    if (btn.dataset.tab === 'overview') {
+      loadSystemMetrics();
+      if (!_overviewRefreshTimer) _overviewRefreshTimer = setInterval(function() { loadStats(); loadSystemMetrics(); }, 15000);
+    } else {
+      if (_overviewRefreshTimer) { clearInterval(_overviewRefreshTimer); _overviewRefreshTimer = null; }
+    }
   });
 });
+// Start overview auto-refresh by default since it's the initial tab
+_overviewRefreshTimer = setInterval(function() { loadStats(); loadSystemMetrics(); }, 15000);
 
 // ---- AIOStreams ----
 async function loadAIOStreams() {
