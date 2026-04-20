@@ -1451,9 +1451,10 @@ async def system_metrics(request: Request, _=Depends(verify_admin)):
     except ImportError:
         pass
     try:
-        from app.main import _stream_cache
+        from app.stream_proxy import _stream_cache, _STREAM_CACHE_MAX
 
         stream_cache_size = len(_stream_cache)
+        stream_cache_max = _STREAM_CACHE_MAX
     except ImportError:
         pass
 
