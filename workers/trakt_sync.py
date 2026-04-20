@@ -852,10 +852,12 @@ def _find_genre_taste_catalogs(
     rng = _daily_rng(user_id)
 
     # Always show the user's #1 tag; rotate the remaining slots from the pool
-    pinned = [top_tags[0]]
-    rest = list(top_tags[1:])
-    rng.shuffle(rest)
-    selected = (pinned + rest)[:max_catalogs]
+    # Cycle through all top tags — advance the window by max_catalogs each day
+    # so every tag gets its turn and no two consecutive days show the same set
+    day_of_year = datetime.utcnow().timetuple().tm_yday
+    pool_size = len(top_tags)
+    start = (day_of_year * max_catalogs) % pool_size
+    selected = [top_tags[(start + i) % pool_size] for i in range(max_catalogs)]
 
     catalogs: List[Dict] = []
     taste_set = set(taste_tag_ids)
