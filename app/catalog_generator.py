@@ -7,7 +7,7 @@ No Gemini calls needed - everything is pre-computed from tags!
 
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
-from sqlalchemy import func, and_, or_
+from sqlalchemy import func, and_, or_, tuple_
 from sqlalchemy.orm import Session
 from loguru import logger
 
@@ -609,23 +609,28 @@ class CatalogGenerator:
         # Taste-boost: re-rank universal catalog items by user taste overlap
         if user_taste_tag_ids and not user_id and items:
             taste_set = set(user_taste_tag_ids)
-            for item in items:
-                # Count how many taste tags this item has
-                tag_hits = (
-                    self.db.query(func.count(MovieTag.tag_id))
-                    .filter(
-                        MovieTag.tmdb_id == item["tmdb_id"],
-                        MovieTag.media_type == item["media_type"],
-                        MovieTag.tag_id.in_(taste_set),
-                    )
-                    .scalar()
-                    or 0
+            item_pairs = [(item["tmdb_id"], item["media_type"]) for item in items]
+            tag_hits_rows = (
+                self.db.query(
+                    MovieTag.tmdb_id,
+                    MovieTag.media_type,
+                    func.count(MovieTag.tag_id),
                 )
-                item["_taste_score"] = tag_hits
+                .filter(
+                    tuple_(MovieTag.tmdb_id, MovieTag.media_type).in_(item_pairs),
+                    MovieTag.tag_id.in_(taste_set),
+                )
+                .group_by(MovieTag.tmdb_id, MovieTag.media_type)
+                .all()
+            )
+            hits_map = {(r[0], r[1]): r[2] for r in tag_hits_rows}
 
-            # Sort by taste score DESC, then original rank ASC
+            for item in items:
+                item["_taste_score"] = hits_map.get(
+                    (item["tmdb_id"], item["media_type"]), 0
+                )
+
             items.sort(key=lambda x: (-x.get("_taste_score", 0), x["rank"]))
-            # Clean up internal field
             for item in items:
                 item.pop("_taste_score", None)
 

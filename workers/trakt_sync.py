@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Set
 
 from loguru import logger
-from sqlalchemy import func
+from sqlalchemy import func, tuple_
 from sqlalchemy.orm import Session
 
 # Add parent directory to path
@@ -326,7 +326,20 @@ async def _backfill_metadata(
                 meta_dict = tmdb_client.extract_metadata(
                     details, media_type  # type: ignore[arg-type]
                 )
-                db.merge(MediaMetadata(**meta_dict))
+                existing_meta = (
+                    db.query(MediaMetadata)
+                    .filter(
+                        MediaMetadata.tmdb_id == meta_dict["tmdb_id"],
+                        MediaMetadata.media_type == meta_dict["media_type"],
+                    )
+                    .first()
+                )
+                if existing_meta:
+                    for key, val in meta_dict.items():
+                        if val is not None:
+                            setattr(existing_meta, key, val)
+                else:
+                    db.add(MediaMetadata(**meta_dict))
                 backfilled += 1
             except Exception as e:
                 logger.debug(
@@ -515,29 +528,38 @@ def _pick_byw_seeds(
             continue
         seen_ids.add(tmdb_id)
 
-        # Check if this item has tags in our database
-        tag_count = (
-            db.query(func.count(MovieTag.tag_id))
-            .filter(
-                MovieTag.tmdb_id == tmdb_id,
-                MovieTag.media_type == media_type,
-            )
-            .scalar()
+        candidates.append(
+            {
+                "tmdb_id": tmdb_id,
+                "media_type": media_type,
+                "title": media.get("title") or media.get("name") or "Unknown",
+            }
         )
 
-        if tag_count and tag_count > 0:
-            title = media.get("title") or media.get("name") or "Unknown"
-            seeds.append(
-                {
-                    "title": title,
-                    "tmdb_id": tmdb_id,
-                    "media_type": media_type,
-                    "tag_count": tag_count,
-                }
-            )
+    # Batch tag-count query instead of per-item queries
+    if candidates:
+        candidate_pairs = [(c["tmdb_id"], c["media_type"]) for c in candidates]
+        tag_counts_rows = (
+            db.query(MovieTag.tmdb_id, MovieTag.media_type, func.count(MovieTag.tag_id))
+            .filter(tuple_(MovieTag.tmdb_id, MovieTag.media_type).in_(candidate_pairs))
+            .group_by(MovieTag.tmdb_id, MovieTag.media_type)
+            .all()
+        )
+        tag_counts = {(r[0], r[1]): r[2] for r in tag_counts_rows}
 
-        if len(seeds) >= max_seeds:
-            break
+        for c in candidates:
+            tc = tag_counts.get((c["tmdb_id"], c["media_type"]), 0)
+            if tc > 0:
+                seeds.append(
+                    {
+                        "title": c["title"],
+                        "tmdb_id": c["tmdb_id"],
+                        "media_type": c["media_type"],
+                        "tag_count": tc,
+                    }
+                )
+                if len(seeds) >= max_seeds:
+                    break
 
     logger.info(f"Selected {len(seeds)} BYW seeds: {[s['title'] for s in seeds]}")
     return seeds
@@ -575,46 +597,68 @@ def _pick_byw_seeds_local(
 
     seen_ids: Set[int] = set()
     seeds: List[Dict] = []
+    candidates: List[Dict] = []
 
     for row in recent:
         if row.tmdb_id in seen_ids:
             continue
         seen_ids.add(row.tmdb_id)
-
-        tag_count = (
-            db.query(func.count(MovieTag.tag_id))
-            .filter(
-                MovieTag.tmdb_id == row.tmdb_id,
-                MovieTag.media_type == row.media_type,
-            )
-            .scalar()
+        candidates.append(
+            {
+                "tmdb_id": row.tmdb_id,
+                "media_type": row.media_type,
+                "title": row.title,
+            }
         )
 
-        if tag_count and tag_count > 0:
-            # Get title from event or MediaMetadata
-            title = row.title
-            if not title:
-                meta = (
-                    db.query(MediaMetadata.title)
-                    .filter(
-                        MediaMetadata.tmdb_id == row.tmdb_id,
-                        MediaMetadata.media_type == row.media_type,
-                    )
-                    .first()
+    if candidates:
+        # Batch tag-count query
+        candidate_pairs = [(c["tmdb_id"], c["media_type"]) for c in candidates]
+        tag_counts_rows = (
+            db.query(MovieTag.tmdb_id, MovieTag.media_type, func.count(MovieTag.tag_id))
+            .filter(tuple_(MovieTag.tmdb_id, MovieTag.media_type).in_(candidate_pairs))
+            .group_by(MovieTag.tmdb_id, MovieTag.media_type)
+            .all()
+        )
+        tag_counts = {(r[0], r[1]): r[2] for r in tag_counts_rows}
+
+        # Batch title lookup for items missing WatchEvent.title
+        missing_title_pairs = [
+            (c["tmdb_id"], c["media_type"])
+            for c in candidates
+            if not c["title"] and tag_counts.get((c["tmdb_id"], c["media_type"]), 0) > 0
+        ]
+        title_map: dict = {}
+        if missing_title_pairs:
+            title_rows = (
+                db.query(
+                    MediaMetadata.tmdb_id, MediaMetadata.media_type, MediaMetadata.title
                 )
-                title = meta.title if meta else "Unknown"
-
-            seeds.append(
-                {
-                    "title": title,
-                    "tmdb_id": row.tmdb_id,
-                    "media_type": row.media_type,
-                    "tag_count": tag_count,
-                }
+                .filter(
+                    tuple_(MediaMetadata.tmdb_id, MediaMetadata.media_type).in_(
+                        missing_title_pairs
+                    )
+                )
+                .all()
             )
+            title_map = {(r.tmdb_id, r.media_type): r.title for r in title_rows}
 
-        if len(seeds) >= max_seeds:
-            break
+        for c in candidates:
+            tc = tag_counts.get((c["tmdb_id"], c["media_type"]), 0)
+            if tc > 0:
+                title = c["title"] or title_map.get(
+                    (c["tmdb_id"], c["media_type"]), "Unknown"
+                )
+                seeds.append(
+                    {
+                        "title": title,
+                        "tmdb_id": c["tmdb_id"],
+                        "media_type": c["media_type"],
+                        "tag_count": tc,
+                    }
+                )
+                if len(seeds) >= max_seeds:
+                    break
 
     logger.info(f"Selected {len(seeds)} local BYW seeds: {[s['title'] for s in seeds]}")
     return seeds
@@ -765,14 +809,12 @@ async def _generate_common_catalogs(
     """
     from app.models import UserCatalog, UserCatalogContent
 
-    async def _save_metadata_from_results(
-        results: list, media_type: str, check_digital: bool = False
-    ) -> list[int]:
+    async def _save_metadata_from_results(results: list, media_type: str) -> list[int]:
         """Extract IDs and save metadata from TMDB list results inline.
 
-        Filters to English-language only. When check_digital is True (movies),
-        verifies each item has a US digital/physical release via TMDB's
-        release_dates endpoint.
+        Filters to English-language only. Saves metadata using selective
+        updates so richer detail-level fields (imdb_id, logo) from prior
+        backfills aren't overwritten with None from list responses.
         """
         tmdb_ids: list[int] = []
         for r in results:
@@ -783,21 +825,7 @@ async def _generate_common_catalogs(
                 continue
             if r.get("original_language") != "en":
                 continue
-            # For movies, verify US digital/physical release exists
-            if check_digital:
-                has_release = await tmdb_client.has_us_digital_release(tid)
-                # Yield to event loop so meta/catalog requests aren't starved
-                await asyncio.sleep(0)
-                if not has_release:
-                    title = r.get("title") or r.get("name") or str(tid)
-                    logger.info(
-                        f"  Excluding '{title}' (TMDB {tid}): no US digital release"
-                    )
-                    continue
             tmdb_ids.append(tid)
-            # Save metadata directly from list response.
-            # Use selective update so we don't overwrite richer detail-level
-            # fields (imdb_id, logo) with None from list responses.
             try:
                 meta_dict = tmdb_client.extract_metadata(
                     r, media_type  # type: ignore[arg-type]
@@ -811,14 +839,13 @@ async def _generate_common_catalogs(
                     .first()
                 )
                 if existing:
-                    # Only update fields that have non-null values from list
                     for key, val in meta_dict.items():
                         if val is not None:
                             setattr(existing, key, val)
                 else:
                     db.add(MediaMetadata(**meta_dict))
-            except Exception:
-                pass  # ID still gets added to catalog even if metadata save fails
+            except Exception as e:
+                logger.debug(f"Metadata save failed for {media_type}/{tid}: {e}")
         db.flush()
         return tmdb_ids
 
@@ -842,9 +869,7 @@ async def _generate_common_catalogs(
                         )
                     )
                     all_results.extend(data.get("results", []))
-            tmdb_ids = await _save_metadata_from_results(
-                all_results, media_type, check_digital=False
-            )
+            tmdb_ids = await _save_metadata_from_results(all_results, media_type)
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
                     user_id=user.id,
@@ -903,9 +928,7 @@ async def _generate_common_catalogs(
                     )
                 all_results.extend(data.get("results", []))
             # TMDB already filtered to US digital/physical releases — no per-item check needed
-            tmdb_ids = await _save_metadata_from_results(
-                all_results, media_type, check_digital=False
-            )
+            tmdb_ids = await _save_metadata_from_results(all_results, media_type)
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
                     user_id=user.id,
@@ -946,9 +969,7 @@ async def _generate_common_catalogs(
                 else:
                     data = await tmdb_client.get_popular_tv_shows(page)
                 all_results.extend(data.get("results", []))
-            tmdb_ids = await _save_metadata_from_results(
-                all_results, media_type, check_digital=False
-            )
+            tmdb_ids = await _save_metadata_from_results(all_results, media_type)
             if tmdb_ids:
                 catalog_gen.save_user_catalog(
                     user_id=user.id,
