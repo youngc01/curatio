@@ -515,6 +515,7 @@ def _pick_byw_seeds(
     """
     seen_ids: Set[int] = set()
     seeds: List[Dict] = []
+    candidates: List[Dict] = []
 
     for item in recent_history:
         movie = item.get("movie")
@@ -1447,7 +1448,7 @@ async def sync_all_users(db: Session) -> Dict:
     )
     common_data = await _prefetch_common_catalog_data(db)
     logger.info(
-        f"Pre-fetch complete: "
+        "Pre-fetch complete: "
         + ", ".join(f"{k}={len(v)}" for k, v in common_data.items())
     )
 
