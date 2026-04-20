@@ -158,6 +158,20 @@ class TMDBClient:
         """Get trending TV shows (day or week)."""
         return await self._request(f"/trending/tv/{time_window}", params={"page": page})
 
+    async def get_movie_release_dates(self, tmdb_id: int) -> Dict:
+        """Get release dates for a movie by region and type."""
+        return await self._request(f"/movie/{tmdb_id}/release_dates")
+
+    @staticmethod
+    def has_home_release(release_dates_data: Dict, region: str = "US") -> bool:
+        """Return True if the movie has a digital (type 4) or physical (type 5) release."""
+        for r in release_dates_data.get("results", []):
+            if r.get("iso_3166_1") == region:
+                for rd in r.get("release_dates", []):
+                    if rd.get("type") in (4, 5):
+                        return True
+        return False
+
     async def get_similar_movies(self, tmdb_id: int, page: int = 1) -> Dict:
         """Get movies similar to the given movie."""
         return await self._request(f"/movie/{tmdb_id}/similar", params={"page": page})

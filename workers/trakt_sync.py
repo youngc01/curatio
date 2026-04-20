@@ -843,6 +843,38 @@ async def _save_metadata_from_results(
     return tmdb_ids
 
 
+async def _filter_home_released_movies(tmdb_ids: list[int]) -> list[int]:
+    """Post-filter movies to those with confirmed US digital or physical release.
+
+    Calls /movie/{id}/release_dates concurrently (max 10 in-flight) and keeps
+    only IDs that have release type 4 (digital) or 5 (physical) for the US.
+    On any per-item error the movie is kept (fail-open) to avoid over-filtering.
+    """
+    if not tmdb_ids:
+        return tmdb_ids
+
+    sem = asyncio.Semaphore(10)
+
+    async def check(tmdb_id: int) -> tuple[int, bool]:
+        async with sem:
+            try:
+                data = await tmdb_client.get_movie_release_dates(tmdb_id)
+                return tmdb_id, tmdb_client.has_home_release(data)
+            except Exception as e:
+                logger.debug(f"Release date check skipped for movie/{tmdb_id}: {e}")
+                return tmdb_id, True  # fail-open: include on error
+
+    checks = await asyncio.gather(*[check(tid) for tid in tmdb_ids])
+    valid = {tid for tid, ok in checks if ok}
+    filtered = [tid for tid in tmdb_ids if tid in valid]
+    excluded = len(tmdb_ids) - len(filtered)
+    if excluded:
+        logger.info(
+            f"Home release post-filter removed {excluded}/{len(tmdb_ids)} theatrical-only movies"
+        )
+    return filtered
+
+
 async def _prefetch_common_catalog_data(db: Session) -> dict[str, list[int]]:
     """Fetch trending/new releases/popular from TMDB once for all users.
 
@@ -894,7 +926,7 @@ async def _prefetch_common_catalog_data(db: Session) -> dict[str, list[int]]:
                             "release_date.gte": cutoff_90d,
                             "release_date.lte": today,
                             "region": "US",
-                            "with_release_type": "4",
+                            "with_release_type": "4|5",
                             "with_original_language": "en",
                             "without_keywords": "210024",
                             "include_adult": False,
@@ -914,9 +946,10 @@ async def _prefetch_common_catalog_data(db: Session) -> dict[str, list[int]]:
                         },
                     )
                 all_results.extend(data.get("results", []))
-            result[slot] = await _save_metadata_from_results(
-                db, all_results, media_type
-            )
+            ids = await _save_metadata_from_results(db, all_results, media_type)
+            if media_type == "movie":
+                ids = await _filter_home_released_movies(ids)
+            result[slot] = ids
             logger.info(f"Prefetched {slot}: {len(result[slot])} items")
         except Exception as e:
             logger.warning(f"Prefetch {slot} failed: {e}")
@@ -934,7 +967,7 @@ async def _prefetch_common_catalog_data(db: Session) -> dict[str, list[int]]:
                             "page": page,
                             "sort_by": "popularity.desc",
                             "region": "US",
-                            "with_release_type": "4",
+                            "with_release_type": "4|5",
                             "with_original_language": "en",
                             "without_keywords": "210024",
                             "include_adult": False,
@@ -943,9 +976,10 @@ async def _prefetch_common_catalog_data(db: Session) -> dict[str, list[int]]:
                 else:
                     data = await tmdb_client.get_popular_tv_shows(page)
                 all_results.extend(data.get("results", []))
-            result[slot] = await _save_metadata_from_results(
-                db, all_results, media_type
-            )
+            ids = await _save_metadata_from_results(db, all_results, media_type)
+            if media_type == "movie":
+                ids = await _filter_home_released_movies(ids)
+            result[slot] = ids
             logger.info(f"Prefetched {slot}: {len(result[slot])} items")
         except Exception as e:
             logger.warning(f"Prefetch {slot} failed: {e}")
