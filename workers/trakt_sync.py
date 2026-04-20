@@ -818,17 +818,19 @@ def _find_genre_taste_catalogs(
     limit: int = 100,
     user_id: int = 0,
 ) -> List[Dict]:
-    """Generate genre/mood-specific taste catalogs.
+    """Generate taste-specific catalog rows (genre, mood, plot, character, etc.).
 
-    Fetches a pool of candidate tags and rotates the selection daily so
-    users see different genre/mood rows each sync.
+    Fetches a pool of candidate tags across all categories and rotates the
+    selection daily so users see different rows each sync.
 
     Returns a list of dicts with keys: slot_id, name, media_type, tmdb_ids.
     """
     if not taste_tag_ids or not all_watched_ids:
         return []
 
-    # Fetch a larger pool of genre/mood tags to rotate through
+    # Fetch top tags across ALL categories, weighted by how often the user
+    # has watched items with that tag — includes genre, mood, plot, style,
+    # character, era, region
     top_tags = (
         db.query(
             Tag.id,
@@ -837,32 +839,23 @@ def _find_genre_taste_catalogs(
             func.count().label("cnt"),
         )
         .join(MovieTag, MovieTag.tag_id == Tag.id)
-        .filter(
-            MovieTag.tmdb_id.in_(all_watched_ids),
-            Tag.category.in_(["genre", "mood"]),
-        )
+        .filter(MovieTag.tmdb_id.in_(all_watched_ids))
         .group_by(Tag.id, Tag.name, Tag.category)
         .order_by(func.count().desc())
         .limit(TASTE_CATALOG_POOL)
         .all()
     )
 
-    genres = [t for t in top_tags if t.category == "genre"]
-    moods = [t for t in top_tags if t.category == "mood"]
+    if not top_tags:
+        return []
 
     rng = _daily_rng(user_id)
 
-    # Pick 2 genre + 2 mood, rotated daily — always keep #1 for continuity,
-    # shuffle the rest to pick the second slot
-    def _pick_two(pool: list) -> list:
-        if len(pool) <= 2:
-            return pool
-        first = pool[0]
-        rest = pool[1:]
-        rng.shuffle(rest)
-        return [first, rest[0]]
-
-    selected = _pick_two(genres) + _pick_two(moods)
+    # Always show the user's #1 tag; rotate the remaining slots from the pool
+    pinned = [top_tags[0]]
+    rest = list(top_tags[1:])
+    rng.shuffle(rest)
+    selected = (pinned + rest)[:max_catalogs]
 
     catalogs: List[Dict] = []
     taste_set = set(taste_tag_ids)
