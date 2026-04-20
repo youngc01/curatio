@@ -902,9 +902,10 @@ async def _prefetch_common_catalog_data(db: Session) -> dict[str, list[int]]:
                         )
                     )
                     all_results.extend(data.get("results", []))
-            result[slot] = await _save_metadata_from_results(
-                db, all_results, media_type
-            )
+            ids = await _save_metadata_from_results(db, all_results, media_type)
+            if media_type == "movie":
+                ids = await _filter_home_released_movies(ids)
+            result[slot] = ids
             logger.info(f"Prefetched {slot}: {len(result[slot])} items")
         except Exception as e:
             logger.warning(f"Prefetch {slot} failed: {e}")
