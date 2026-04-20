@@ -52,6 +52,14 @@ sync_status: dict = {
 }
 
 # ---------------------------------------------------------------------------
+# Tunable constants
+# ---------------------------------------------------------------------------
+MAX_BYW_SEEDS = 5  # max "Because You Watched" seed items per user
+TASTE_TOP_N_TAGS = 15  # top N tags used when building a taste profile
+BYW_CANDIDATE_HISTORY = 50  # recent watch events to consider for BYW seeds
+TMDB_DISCOVER_PAGES = 3  # pages fetched per discover/trending call
+
+# ---------------------------------------------------------------------------
 # Catalog slot ordering — controls row order in Stremio (lower = higher up)
 # ---------------------------------------------------------------------------
 SLOT_ORDER = {
@@ -1371,17 +1379,13 @@ async def sync_local_user_catalogs(
     # ------------------------------------------------------------------
     # Step 4b: Genre/mood taste catalogs — "Sci-Fi For You", etc.
     # ------------------------------------------------------------------
-    taste_tag_ids = build_taste_profile(
-        db, list(all_movie_ids | all_show_ids), "movie", top_n_tags=15
-    ) + build_taste_profile(db, list(all_movie_ids | all_show_ids), "tv", top_n_tags=15)
-    # Deduplicate while preserving order
-    seen_tags: set[int] = set()
-    unique_taste_tags: list[int] = []
-    for tid in taste_tag_ids:
-        if tid not in seen_tags:
-            seen_tags.add(tid)
-            unique_taste_tags.append(tid)
-    taste_tag_ids = unique_taste_tags
+    watched_ids = list(all_movie_ids | all_show_ids)
+    taste_tag_ids = list(
+        dict.fromkeys(
+            build_taste_profile(db, watched_ids, "movie", top_n_tags=TASTE_TOP_N_TAGS)
+            + build_taste_profile(db, watched_ids, "tv", top_n_tags=TASTE_TOP_N_TAGS)
+        )
+    )
 
     try:
         taste_catalogs = _find_genre_taste_catalogs(
