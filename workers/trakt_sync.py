@@ -37,6 +37,21 @@ from app.tmdb_client import tmdb_client  # noqa: E402
 from app.catalog_generator import CatalogGenerator  # noqa: E402
 
 # ---------------------------------------------------------------------------
+# Sync status (in-memory, read by admin portal for live progress)
+# ---------------------------------------------------------------------------
+sync_status: dict = {
+    "running": False,
+    "started_at": None,
+    "completed_at": None,
+    "current_user": None,
+    "users_done": 0,
+    "users_total": 0,
+    "prefetch_counts": {},
+    "home_release_filtered": 0,
+    "last_error": None,
+}
+
+# ---------------------------------------------------------------------------
 # Catalog slot ordering — controls row order in Stremio (lower = higher up)
 # ---------------------------------------------------------------------------
 SLOT_ORDER = {
@@ -870,6 +885,7 @@ async def _filter_home_released_movies(tmdb_ids: list[int]) -> list[int]:
     filtered = [tid for tid in tmdb_ids if tid in valid]
     excluded = len(tmdb_ids) - len(filtered)
     if excluded:
+        sync_status["home_release_filtered"] += excluded
         logger.info(
             f"Home release post-filter removed {excluded}/{len(tmdb_ids)} theatrical-only movies"
         )
@@ -1442,12 +1458,21 @@ async def sync_all_users(db: Session) -> Dict:
 
     logger.info(f"Starting Trakt sync for {len(users)} active users...")
 
+    sync_status["running"] = True
+    sync_status["started_at"] = datetime.utcnow().isoformat()
+    sync_status["completed_at"] = None
+    sync_status["users_done"] = 0
+    sync_status["users_total"] = len(users)
+    sync_status["current_user"] = None
+    sync_status["home_release_filtered"] = 0
+    sync_status["last_error"] = None
+
     # Fetch trending/new-releases/popular from TMDB once — shared across all users
-    # so we make ~18 TMDB requests total instead of 18 × N per-user requests.
     logger.info(
         "Pre-fetching common TMDB catalog data (trending, new releases, popular)..."
     )
     common_data = await _prefetch_common_catalog_data(db)
+    sync_status["prefetch_counts"] = {k: len(v) for k, v in common_data.items()}
     logger.info(
         "Pre-fetch complete: "
         + ", ".join(f"{k}={len(v)}" for k, v in common_data.items())
@@ -1456,6 +1481,12 @@ async def sync_all_users(db: Session) -> Dict:
     stats = {"total": len(users), "synced": 0, "failed": 0, "catalogs": 0}
 
     for user in users:
+        display = (
+            user.trakt_username
+            or getattr(user, "display_name", None)
+            or user.user_key[:8]
+        )
+        sync_status["current_user"] = display
         try:
             auth_source = getattr(user, "auth_source", "trakt")
             if auth_source == "local":
@@ -1470,13 +1501,17 @@ async def sync_all_users(db: Session) -> Dict:
             stats["synced"] += 1
             stats["catalogs"] += count
         except Exception as e:
-            display = user.trakt_username or user.display_name or user.user_key[:8]
             logger.error(f"Sync failed for user {display}: {e}")
+            sync_status["last_error"] = f"{display}: {str(e)[:100]}"
             stats["failed"] += 1
             db.rollback()
 
-        # Brief pause between users to avoid hammering APIs
+        sync_status["users_done"] = stats["synced"] + stats["failed"]
         await asyncio.sleep(1)
+
+    sync_status["running"] = False
+    sync_status["completed_at"] = datetime.utcnow().isoformat()
+    sync_status["current_user"] = None
 
     logger.info(
         f"Trakt sync complete: {stats['synced']}/{stats['total']} users synced, "
