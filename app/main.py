@@ -605,7 +605,12 @@ async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
     }
 
     response = JSONResponse(content=manifest_data)
-    response.headers["Cache-Control"] = "public, max-age=3600"
+    # New users have no personal catalogs yet — use a short TTL so Stremio
+    # re-fetches after the background sync finishes populating them.
+    if user.last_sync is None:
+        response.headers["Cache-Control"] = "public, max-age=30"
+    else:
+        response.headers["Cache-Control"] = "public, max-age=3600"
     return response
 
 
@@ -849,6 +854,13 @@ _catalog_cache: dict[str, tuple[float, list]] = {}
 # ---- User-key → User lookup cache (avoids DB hit on every request) ----
 _user_cache: dict[str, tuple[float, "User | None"]] = {}
 _USER_CACHE_TTL = 300  # 5 minutes
+_USER_CACHE_MAX = 512
+
+
+def _user_cache_evict():
+    while len(_user_cache) > _USER_CACHE_MAX:
+        oldest_key = min(_user_cache, key=lambda k: _user_cache[k][0])
+        del _user_cache[oldest_key]
 
 
 def _cache_evict():
@@ -942,6 +954,7 @@ def _get_cached_user(user_key: str, db: Session) -> "User | None":
 
     user = db.query(User).filter(User.user_key == user_key).first()
     _user_cache[user_key] = (now, user)
+    _user_cache_evict()
     return user
 
 

@@ -20,13 +20,14 @@ class TMDBServerError(Exception):
 
 
 def _is_retryable(exc: BaseException) -> bool:
-    """Retry on transient/connection errors, not TMDB 5xx server errors."""
+    """Retry on transient/connection errors only."""
     if isinstance(exc, TMDBServerError):
         return False
-    # Always retry connection-level errors (VPN/Gluetun reconnects)
+    if isinstance(exc, httpx.HTTPStatusError):
+        return False
     if isinstance(exc, (httpx.ConnectError, httpx.RemoteProtocolError, OSError)):
         return True
-    return True  # default: retry
+    return True
 
 
 MediaType = Literal["movie", "tv"]
@@ -72,8 +73,8 @@ class TMDBClient:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or settings.tmdb_api_key
         self.client = httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0),
-            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+            timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=15.0),
+            limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
         )
 
     async def close(self):
@@ -143,55 +144,6 @@ class TMDBClient:
         """Get detailed information for a specific TV season."""
         return await self._request(f"/tv/{tmdb_id}/season/{season_number}")
 
-    async def get_movie_release_dates(self, tmdb_id: int) -> Dict:
-        """Get release dates for a movie by country and type."""
-        return await self._request(f"/movie/{tmdb_id}/release_dates")
-
-    async def has_us_digital_release(self, tmdb_id: int) -> bool:
-        """Check if a movie has a US digital or physical release date in the past.
-
-        TMDB release types: 1=Premiere, 2=Theatrical(limited),
-        3=Theatrical, 4=Digital, 5=Physical, 6=TV
-        """
-        type_names = {
-            1: "Premiere",
-            2: "Theatrical(limited)",
-            3: "Theatrical",
-            4: "Digital",
-            5: "Physical",
-            6: "TV",
-        }
-        try:
-            data = await self.get_movie_release_dates(tmdb_id)
-            today = datetime.now().strftime("%Y-%m-%d")
-            us_found = False
-            for entry in data.get("results", []):
-                if entry.get("iso_3166_1") != "US":
-                    continue
-                us_found = True
-                for rd in entry.get("release_dates", []):
-                    rtype = rd.get("type")
-                    rdate = (rd.get("release_date") or "")[:10]
-                    logger.debug(
-                        f"TMDB release check {tmdb_id}: "
-                        f"type={rtype}({type_names.get(rtype, '?')}) "
-                        f"date={rdate} today={today}"
-                    )
-                    if rtype in (4, 5) and rdate and rdate <= today:
-                        logger.info(
-                            f"Movie {tmdb_id} has US digital/physical release: "
-                            f"type={type_names.get(rtype)} date={rdate}"
-                        )
-                        return True
-            if not us_found:
-                logger.debug(f"Movie {tmdb_id}: no US release data found")
-            else:
-                logger.debug(f"Movie {tmdb_id}: no US digital/physical release yet")
-            return False
-        except Exception as e:
-            logger.warning(f"Release date check failed for {tmdb_id}: {e}")
-            return False
-
     async def get_trending_movies(
         self, time_window: str = "day", page: int = 1
     ) -> Dict:
@@ -205,6 +157,20 @@ class TMDBClient:
     ) -> Dict:
         """Get trending TV shows (day or week)."""
         return await self._request(f"/trending/tv/{time_window}", params={"page": page})
+
+    async def get_movie_release_dates(self, tmdb_id: int) -> Dict:
+        """Get release dates for a movie by region and type."""
+        return await self._request(f"/movie/{tmdb_id}/release_dates")
+
+    @staticmethod
+    def has_home_release(release_dates_data: Dict, region: str = "US") -> bool:
+        """Return True if the movie has a digital (type 4) or physical (type 5) release."""
+        for r in release_dates_data.get("results", []):
+            if r.get("iso_3166_1") == region:
+                for rd in r.get("release_dates", []):
+                    if rd.get("type") in (4, 5):
+                        return True
+        return False
 
     async def get_similar_movies(self, tmdb_id: int, page: int = 1) -> Dict:
         """Get movies similar to the given movie."""
