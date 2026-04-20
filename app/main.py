@@ -605,7 +605,12 @@ async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
     }
 
     response = JSONResponse(content=manifest_data)
-    response.headers["Cache-Control"] = "public, max-age=3600"
+    # New users have no personal catalogs yet — use a short TTL so Stremio
+    # re-fetches after the background sync finishes populating them.
+    if user.last_sync is None:
+        response.headers["Cache-Control"] = "public, max-age=30"
+    else:
+        response.headers["Cache-Control"] = "public, max-age=3600"
     return response
 
 
