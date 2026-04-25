@@ -76,11 +76,18 @@ from app.models import UserSession
 # ---- Manifest cache (avoids DB query on every manifest request) ----
 _manifest_cache: dict[str, tuple[float, dict]] = {}
 _MANIFEST_TTL = 300  # 5 minutes
+_MANIFEST_CACHE_MAX = 256
 
 
 def _invalidate_manifest_cache():
     """Call after admin changes categories to clear cached manifests."""
     _manifest_cache.clear()
+
+
+def _manifest_cache_evict():
+    while len(_manifest_cache) > _MANIFEST_CACHE_MAX:
+        oldest_key = min(_manifest_cache, key=lambda k: _manifest_cache[k][0])
+        del _manifest_cache[oldest_key]
 
 
 # ---- Install token (secret URL segment for universal manifest) ----
@@ -507,6 +514,7 @@ async def manifest(user_key: str, db: Session = Depends(get_db_dependency)):
         }
 
         _manifest_cache[cache_key] = (now, manifest_data)
+        _manifest_cache_evict()
 
         response = JSONResponse(content=manifest_data)
         response.headers["Cache-Control"] = "public, max-age=3600"
@@ -630,7 +638,7 @@ def _build_stremio_metas(items: list, catalog_type: str) -> list:
         }
 
         if item.get("poster"):
-            meta["poster"] = f"https://image.tmdb.org/t/p/w780{item['poster']}"
+            meta["poster"] = f"https://image.tmdb.org/t/p/original{item['poster']}"
 
         if item.get("year"):
             meta["releaseInfo"] = item["year"]
@@ -655,7 +663,7 @@ def _build_stremio_metas(items: list, catalog_type: str) -> list:
                 meta["behaviorHints"] = {"defaultVideoId": item["imdb_id"]}
 
         if item.get("logo"):
-            meta["logo"] = f"https://image.tmdb.org/t/p/w500{item['logo']}"
+            meta["logo"] = f"https://image.tmdb.org/t/p/original{item['logo']}"
 
         metas.append(meta)
     return metas
@@ -695,7 +703,7 @@ def _build_rich_meta(detail: dict, tmdb_type: str, stremio_type: str) -> dict:
 
     # Images
     if detail.get("poster_path"):
-        meta["poster"] = f"https://image.tmdb.org/t/p/w780{detail['poster_path']}"
+        meta["poster"] = f"https://image.tmdb.org/t/p/original{detail['poster_path']}"
     if detail.get("backdrop_path"):
         meta["background"] = (
             f"https://image.tmdb.org/t/p/original{detail['backdrop_path']}"
@@ -705,7 +713,7 @@ def _build_rich_meta(detail: dict, tmdb_type: str, stremio_type: str) -> dict:
     if logos:
         logo_path = logos[0].get("file_path")
         if logo_path:
-            meta["logo"] = f"https://image.tmdb.org/t/p/w500{logo_path}"
+            meta["logo"] = f"https://image.tmdb.org/t/p/original{logo_path}"
 
     # Cast, director, writer from credits
     credits = detail.get("credits", {})
@@ -1081,9 +1089,7 @@ def catalog_with_extra(
     threadpool and do not block the event loop under heavy load.
     """
     params = _parse_extras(extra)
-    skip = int(params.get("skip", 0))
-    if skip < 0:
-        skip = 0
+    skip = max(0, min(int(params.get("skip", 0)), 10_000))
     search = params.get("search")
     return catalog(user_key, catalog_type, catalog_id, skip, db, search=search)
 
@@ -1236,11 +1242,14 @@ async def meta_handler(user_key: str, meta_type: str, meta_id: str):
             seasons = detail.get("seasons", [])
             regular_seasons = [s for s in seasons if s.get("season_number", 0) > 0]
 
+            _season_sem = asyncio.Semaphore(5)
+
             async def _fetch_season(s_num: int):
-                try:
-                    return await tmdb_client.get_tv_season(tmdb_id, s_num)
-                except Exception:
-                    return None
+                async with _season_sem:
+                    try:
+                        return await tmdb_client.get_tv_season(tmdb_id, s_num)
+                    except Exception:
+                        return None
 
             season_results = await asyncio.gather(
                 *[_fetch_season(s["season_number"]) for s in regular_seasons]
@@ -1261,7 +1270,7 @@ async def meta_handler(user_key: str, meta_type: str, meta_id: str):
                     }
                     if ep.get("still_path"):
                         video["thumbnail"] = (
-                            f"https://image.tmdb.org/t/p/w300{ep['still_path']}"
+                            f"https://image.tmdb.org/t/p/original{ep['still_path']}"
                         )
                     videos.append(video)
 
