@@ -1480,8 +1480,12 @@ async def sync_local_user_catalogs(
     all_watched_list = list(all_movie_ids | all_show_ids)
     taste_tag_ids = list(
         dict.fromkeys(
-            build_taste_profile(db, all_watched_list, "movie", top_n_tags=TASTE_TOP_N_TAGS)
-            + build_taste_profile(db, all_watched_list, "tv", top_n_tags=TASTE_TOP_N_TAGS)
+            build_taste_profile(
+                db, all_watched_list, "movie", top_n_tags=TASTE_TOP_N_TAGS
+            )
+            + build_taste_profile(
+                db, all_watched_list, "tv", top_n_tags=TASTE_TOP_N_TAGS
+            )
         )
     )
 
