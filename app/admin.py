@@ -1206,6 +1206,13 @@ async def set_user_bandwidth(user_id: int, request: Request, _=Depends(verify_ad
             raise HTTPException(404, "User not found")
         user.bandwidth_tier = tier
         db.commit()
+        user_key = user.user_key
+
+    # Evict from user cache so the change takes effect immediately
+    from app.main import _user_cache
+
+    _user_cache.pop(user_key, None)
+
     return {"status": "ok", "bandwidth_tier": tier}
 
 
